@@ -2,7 +2,7 @@
 
 A desktop application for hobbyist and professional perfumers to create, manage, and analyze fragrance formulas.
 
-![Formul8 Screenshot](assets/screenshot.png)
+![Formul8 Screenshot](assets/screenshot.jpg)
 
 ## About The Project
 
