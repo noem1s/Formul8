@@ -26,5 +26,3 @@ Formul8 was created to provide a streamlined, offline tool for fragrance creatio
 ## License
 
 This project is licensed under the **Attribution-NonCommercial-ShareAlike 4.0 International**.
-
-For the full license, see [http://creativecommons.org/licenses/by-nc-sa/4.0/](http://creativecommons.org/licenses/by-nc-sa/4.0/).
