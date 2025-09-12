@@ -7,9 +7,8 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 from urllib.parse import quote
 
-# RATIONALE: Import the constants and our new custom widget
 from ..constants import GITHUB_ICON_SVG, INSTAGRAM_ICON_SVG, GITHUB_ICON_SVG_HOVER, INSTAGRAM_ICON_SVG_HOVER
-from ..ui_components import HoverIconLink
+from ..components import HoverIconLink
 
 
 class MainMenuFrame(QWidget):
@@ -71,7 +70,6 @@ class MainMenuFrame(QWidget):
         links_layout.setSpacing(15)
         links_layout.setContentsMargins(15, 30, 0, 10)
 
-        # UPDATED: Use the new HoverIconLink widget
         github_url = "https://github.com/noem1s"
         github_label = HoverIconLink(
             normal_svg=GITHUB_ICON_SVG,
@@ -81,7 +79,6 @@ class MainMenuFrame(QWidget):
         )
         links_layout.addWidget(github_label)
 
-        # UPDATED: Use the new HoverIconLink widget
         instagram_url = "https://www.instagram.com/_.noemis._/?hl=en"
         instagram_label = HoverIconLink(
             normal_svg=INSTAGRAM_ICON_SVG,

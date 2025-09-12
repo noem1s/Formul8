@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabBar, 
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 
 # --- Local Imports ---
-from ..ui_components import AnimatedStackedWidget
+from ..components import AnimatedStackedWidget
 from .formulation_creator import CreateFormulationFrame
 from .formulation_viewer import ViewEditFormulationsFrame
 
@@ -17,10 +17,8 @@ class FormulationMainFrame(QWidget):
     """
     back_signal = pyqtSignal()
 
-    # UPDATED: The constructor now accepts the data_manager instance.
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
-        # RATIONALE: The passed-in DataManager is stored and will be passed down to child widgets.
         self.data_manager = data_manager
         self._viewer_preloaded = False
 
@@ -55,19 +53,22 @@ class FormulationMainFrame(QWidget):
         self.page_stack = AnimatedStackedWidget()
         layout.addWidget(self.page_stack)
 
-        # UPDATED: Pass the data_manager instance to the child frames.
         self.create_frame = CreateFormulationFrame(data_manager=self.data_manager)
         self.view_edit_frame = ViewEditFormulationsFrame(data_manager=self.data_manager)
 
-        self.tab_bar.addTab("Create / Edit Formulation")
+        self.tab_bar.addTab("Create / Edit")
         self.page_stack.addWidget(self.create_frame)
-        self.tab_bar.addTab("View Formulations")
+        self.tab_bar.addTab("View All")
         self.page_stack.addWidget(self.view_edit_frame)
 
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.view_edit_frame.edit_formulation_signal.connect(self.handle_edit_request)
 
     def handle_edit_request(self, formula_data):
+        """
+        Public slot to load a formulation or accord into the editor and switch to it.
+        This is called from the main window when an edit is requested from another view.
+        """
         self.create_frame.setup_for_editing(formula_data)
         create_frame_index = self.page_stack.indexOf(self.create_frame)
         self.tab_bar.setCurrentIndex(create_frame_index)

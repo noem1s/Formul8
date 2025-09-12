@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from .views.settings_data import DataManagementFrame
 
 from .constants import APP_VERSION
-from .ui_components import CustomTitleBar, AnimatedStackedWidget, CustomMessageBox
+from .components import CustomTitleBar, AnimatedStackedWidget, CustomMessageBox
 from .data_manager import DataManager
 
 
@@ -114,8 +114,8 @@ class MainWindow(QMainWindow):
         ing_manager.back_signal.connect(self.go_back)
         ing_manager.edit_ingredient_signal.connect(self.show_edit_ingredient_frame)
 
-        # --- THIS IS THE FIX ---
-        # The "Cancel" button on the Edit screen now uses the history system.
+        ing_manager.edit_accord_signal.connect(self.show_edit_accord_frame)
+
         self.frames["EditIngredient"].back_to_list_signal.connect(self.go_back)
 
         formulation_main_frame = self.frames["Formulations"]
@@ -155,6 +155,15 @@ class MainWindow(QMainWindow):
         """ Special handler to pass data to the edit ingredient frame before showing it. """
         self.frames["EditIngredient"].setup_ingredient_for_editing(data)
         self.show_frame("EditIngredient")
+
+    def show_edit_accord_frame(self, accord_data):
+        """
+        Handles the request to edit an accord. It reuses the main formulation
+        editor to provide a consistent user experience.
+        """
+        formulation_main_frame = self.frames["Formulations"]
+        formulation_main_frame.handle_edit_request(accord_data)
+        self.show_frame("Formulations")
 
     def show_list_management_frame(self, key, title):
         """ Special handler for the generic list management frame. """
@@ -201,7 +210,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         """
         Overrides the default close event to ensure a graceful and complete shutdown.
-        This is the ONLY safe way to exit the application.
         """
         if self._is_closing:
             event.accept()
@@ -225,7 +233,6 @@ class MainWindow(QMainWindow):
         self._animation.finished.connect(QApplication.instance().quit)
         self._animation.start()
 
-    # --- Window Animations and Event Handling (These remain unchanged) ---
     def changeEvent(self, event: QEvent):
         if event.type() == QEvent.Type.WindowStateChange and event.oldState() & Qt.WindowState.WindowMinimized:
             if not self._is_animating_state_change: self._animate_unminimize()

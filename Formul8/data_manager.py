@@ -1,11 +1,12 @@
 # formul8/data_manager.py
-# This is the "Model" of the application, handling all data operations.
+# This is the "Model" of the application, handling all data operations via SQLite.
 
 import json
 import os
 import shutil
+import sqlite3
 from datetime import datetime
-from .utils import resource_path
+from . import database
 from .constants import (
     DEFAULT_SCENT_CATEGORIES, DEFAULT_SUPPLIERS, DEFAULT_BRANDS,
     DEFAULT_DILUENTS, DEFAULT_SCENT_PROFILE_COLORS
@@ -16,163 +17,234 @@ from fpdf import FPDF
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 
-# Helper function to create a persistent data path in the user's AppData folder
-def get_user_data_path(filename="perfume_data.json"):
-    """
-    Returns the full path to the user's data file.
-    Creates the application's data directory if it doesn't exist.
-    Path will be like: C:/Users/YourUser/AppData/Roaming/Formul8/perfume_data.json
-    """
-    app_name = "Formul8"
-    # Get the AppData\Roaming directory
-    app_data_dir = os.path.join(os.getenv('APPDATA'), app_name)
-
-    # Create the directory if it doesn't exist
-    os.makedirs(app_data_dir, exist_ok=True)
-
-    return os.path.join(app_data_dir, filename)
-
-
 class DataManager:
-    """ Manages loading, accessing, and saving of all application data. """
+    """ Manages loading, accessing, and saving of all application data via an SQLite database. """
 
-    def __init__(self, data_filename="perfume_data.json"):
-        # Path for user's saved data (read/write)
-        self.data_file = get_user_data_path(data_filename)
-        # Path for the initial/bundled data (read-only)
-        self.bundle_data_file = resource_path(f"assets/{data_filename}")
-        self.data = self._load_data()
+    def __init__(self):
+        self.conn = database.initialize_database()
+        self._ensure_default_settings()
 
-    def _load_data(self):
-        """
-        Loads data from the user's persistent file. If it doesn't exist,
-        it copies and loads the initial data from the application bundle.
-        """
-        data = {}
+    def _ensure_default_settings(self):
+        """Ensures that default settings are present in the database."""
+        defaults = {
+            'scent_categories': DEFAULT_SCENT_CATEGORIES,
+            'suppliers': DEFAULT_SUPPLIERS,
+            'brands': DEFAULT_BRANDS,
+            'diluents': DEFAULT_DILUENTS,
+            'default_formulation_view': 'grid',
+            'scent_profile_colors': DEFAULT_SCENT_PROFILE_COLORS
+        }
+        for key, value in defaults.items():
+            if self.get_setting(key) is None:
+                self.save_setting(key, value)
 
-        # 1. Try to load the user's saved data file first.
-        if os.path.exists(self.data_file):
-            try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                print(f"Warning: Could not read {self.data_file}. A backup will be created and a fresh file used.")
-                # If the user file is corrupt, back it up and proceed to load from bundle
-                try:
-                    shutil.copy(self.data_file, f"{self.data_file}.bak")
-                except IOError:
-                    pass  # Can't even back it up, just overwrite
-                data = {}  # Reset data to ensure we load from bundle
-
-        # 2. If no user data was loaded, load the initial data from the bundle.
-        if not data:
-            print("No user data found. Loading initial data from bundle.")
-            try:
-                with open(self.bundle_data_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                # After loading initial data, save it immediately to the user's path
-                # This creates the user's own copy for future use.
-                self._save_data_to_path(self.data_file, data)
-            except (FileNotFoundError, json.JSONDecodeError):
-                print(f"Warning: Could not read bundled data file {self.bundle_data_file}.")
-                data = {}  # Fallback to empty if even bundled data is missing
-
-        # Ensure top-level keys exist
-        data.setdefault('ingredients', [])
-        data.setdefault('formulations', [])
-        data.setdefault('settings', {})
-
-        # Ensure default settings exist
-        settings = data['settings']
-        settings.setdefault('scent_categories', DEFAULT_SCENT_CATEGORIES)
-        settings.setdefault('suppliers', DEFAULT_SUPPLIERS)
-        settings.setdefault('brands', DEFAULT_BRANDS)
-        settings.setdefault('diluents', DEFAULT_DILUENTS)
-        settings.setdefault('default_formulation_view', 'grid')
-        settings.setdefault('scent_profile_colors', DEFAULT_SCENT_PROFILE_COLORS)
-
-        # Data integrity checks for older data formats
-        for ing in data['ingredients']:
-            ing.setdefault('cost', 0.0)
-            ing.setdefault('note_type', 'Other')
-            ing.setdefault('notes', '')
-            ing.setdefault('diluent', '')
-        for form in data.get('formulations', []):
-            form.setdefault('calculated_total_cost', 0.0)
-            for entry in form.get('entries', []):
-                entry.setdefault('unit', form.get('unit', 'gram'))
-                entry.setdefault('highlight_color', None)
-
-        return data
-
-    def _save_data_to_path(self, path, data_to_save):
-        """Saves a data dictionary to a specific file path."""
+    def get_all_ingredients(self):
+        """Retrieves all ingredients from the database."""
         try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data_to_save, f, indent=4)
-            return True
-        except IOError as e:
-            print(f"FATAL: Could not save data to {path}. Error: {e}")
-            return False
+            cur = self.conn.cursor()
+            cur.execute("SELECT * FROM ingredients")
+            return [dict(row) for row in cur.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Database error getting ingredients: {e}")
+            return []
+
+    def get_all_formulations(self):
+        """Retrieves all formulations, including their entries."""
+        formulations = {}
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT * FROM formulations")
+            for row in cur.fetchall():
+                formulations[row['name']] = dict(row)
+                formulations[row['name']]['entries'] = []
+
+            cur.execute("SELECT * FROM formulation_entries")
+            for row in cur.fetchall():
+                form_name = row['formulation_name']
+                if form_name in formulations:
+                    formulations[form_name]['entries'].append(dict(row))
+
+            return list(formulations.values())
+        except sqlite3.Error as e:
+            print(f"Database error getting formulations: {e}")
+            return []
 
     def save_data(self):
-        """ Saves the current data dictionary to the user's persistent data file. """
-        self._save_data_to_path(self.data_file, self.data)
+        """Commits any pending transaction. Most operations now commit themselves."""
+        if self.conn:
+            self.conn.commit()
 
     def get_ingredient_by_name(self, name):
-        if not name:
+        if not name: return None
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT * FROM ingredients WHERE lower(name) = ?", (name.lower(),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            print(f"Database error in get_ingredient_by_name: {e}")
             return None
-        for ing in self.data['ingredients']:
-            if ing.get('name', '').lower() == name.lower():
-                return ing
-        return None
 
     def get_formulation_by_name(self, name):
-        if not name:
+        if not name: return None
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT * FROM formulations WHERE lower(name) = ?", (name.lower(),))
+            form_row = cur.fetchone()
+            if not form_row:
+                return None
+
+            formulation = dict(form_row)
+            formulation['entries'] = []
+
+            cur.execute("SELECT * FROM formulation_entries WHERE formulation_name = ?", (formulation['name'],))
+            entries = cur.fetchall()
+            formulation['entries'] = [dict(entry) for entry in entries]
+            return formulation
+        except sqlite3.Error as e:
+            print(f"Database error in get_formulation_by_name: {e}")
             return None
-        for form in self.data['formulations']:
-            if form.get('name', '').lower() == name.lower():
-                return form
-        return None
+
+    def save_ingredient(self, ingredient_data):
+        """Inserts or updates an ingredient, handling potential name changes."""
+        original_name = ingredient_data.get('original_name', ingredient_data['name'])
+        is_update = self.get_ingredient_by_name(original_name) is not None
+
+        try:
+            cur = self.conn.cursor()
+            if is_update:
+                cur.execute("""
+                    UPDATE ingredients SET
+                    name=?, type=?, concentration=?, diluent=?, brand=?, chemical_name=?, vendor=?, cost=?,
+                    note_type=?, primary_category=?, secondary_category=?, notes=?
+                    WHERE name=?
+                """, (
+                    ingredient_data.get('name'), ingredient_data.get('type', 'raw'),
+                    ingredient_data.get('concentration'),
+                    ingredient_data.get('diluent'), ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
+                    ingredient_data.get('vendor'), ingredient_data.get('cost'), ingredient_data.get('note_type'),
+                    ingredient_data.get('primary_category'), ingredient_data.get('secondary_category'),
+                    ingredient_data.get('notes'), original_name
+                ))
+            else:
+                cur.execute("""
+                    INSERT INTO ingredients (name, type, concentration, diluent, brand, chemical_name, vendor, cost, note_type, primary_category, secondary_category, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ingredient_data.get('name'), ingredient_data.get('type', 'raw'),
+                    ingredient_data.get('concentration'),
+                    ingredient_data.get('diluent'), ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
+                    ingredient_data.get('vendor'), ingredient_data.get('cost'), ingredient_data.get('note_type'),
+                    ingredient_data.get('primary_category'), ingredient_data.get('secondary_category'),
+                    ingredient_data.get('notes')
+                ))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Database error saving ingredient: {e}")
+            return False
+
+    def save_formulation(self, formula_data):
+        """Saves a complete formulation, overwriting if it exists."""
+        name = formula_data['name']
+        try:
+            cur = self.conn.cursor()
+            # Use INSERT OR REPLACE for simplicity, assuming name is the primary key and unique.
+            cur.execute("INSERT OR REPLACE INTO formulations (name, unit, is_accord) VALUES (?, ?, ?)",
+                        (name, formula_data.get('unit'), formula_data.get('is_accord', False)))
+
+            # Delete old entries before inserting new ones to handle updates.
+            cur.execute("DELETE FROM formulation_entries WHERE formulation_name=?", (name,))
+
+            for entry in formula_data.get('entries', []):
+                cur.execute("""
+                    INSERT INTO formulation_entries (formulation_name, ingredient_name, quantity, unit, highlight_color)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    name, entry['ingredient_name'], entry['quantity'], entry['unit'], entry['highlight_color']
+                ))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Database error saving formulation: {e}")
+            return False
+
+    def delete_ingredient(self, name):
+        """Deletes an ingredient by name."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM ingredients WHERE name=?", (name,))
+            self.conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.Error as e:
+            print(f"Database error deleting ingredient: {e}")
+            return False
+
+    def delete_formulation(self, name):
+        """Deletes a formulation and its corresponding accord-ingredient if it exists."""
+        formula = self.get_formulation_by_name(name)
+        if not formula:
+            return False
+
+        try:
+            cur = self.conn.cursor()
+            if formula.get('is_accord'):
+                self.delete_ingredient(name)
+
+            cur.execute("DELETE FROM formulations WHERE name=?", (name,))
+            # Entries are deleted automatically due to ON DELETE CASCADE
+            self.conn.commit()
+            return cur.rowcount > 0
+        except sqlite3.Error as e:
+            print(f"Database error deleting formulation: {e}")
+            return False
+
+    def create_accord_as_ingredient(self, formulation_obj, note_type, primary_category, secondary_category):
+        """Creates or updates an ingredient entry for a given accord formulation."""
+        self.calculate_formulation_totals(formulation_obj)
+        total_cost = formulation_obj.get('calculated_total_cost', 0.0)
+        total_grams = formulation_obj.get('calculated_total_grams', 0.0)
+        cost_per_gram = (total_cost / total_grams) if total_grams > 0 else 0
+
+        accord_ingredient_data = {
+            "name": formulation_obj['name'], "type": "accord", "concentration": 100.0,
+            "cost": cost_per_gram, "note_type": note_type, "primary_category": primary_category,
+            "secondary_category": secondary_category, "diluent": "", "brand": "",
+            "chemical_name": "", "vendor": "", "notes": "This is a user-created accord."
+        }
+        self.save_ingredient(accord_ingredient_data)
 
     def calculate_formulation_totals(self, formulation):
-        """ Calculates totals for a formulation object and updates it in place. """
         concentrate_grams, solvent_grams, total_cost = 0.0, 0.0, 0.0
-
         for entry in formulation.get('entries', []):
+            quantity = entry.get('quantity', 0.0)
             ing = self.get_ingredient_by_name(entry.get('ingredient_name'))
             if not ing:
+                entry['cost'] = 0.0
                 continue
-
-            quantity = entry.get('quantity', 0.0)
-            # Cost per gram of pure material
-            eff_cost = ing.get('cost', 0.0)
-            if ing.get('concentration', 100.0) < 100.0:
-                eff_cost = (ing.get('cost', 0.0) / ing.get('concentration', 100.0)) * 100.0
-
-            entry['cost'] = quantity * eff_cost
-            total_cost += entry['cost']
-
-            if ing.get('note_type') == 'Solvent':
-                solvent_grams += quantity
-            else:
+            if ing.get('type') == 'accord':
+                entry['cost'] = quantity * ing.get('cost', 0.0)
+                total_cost += entry['cost']
                 concentrate_grams += quantity
-
+            else:
+                eff_cost = ing.get('cost', 0.0)
+                conc = ing.get('concentration', 100.0)
+                if conc < 100.0:
+                    eff_cost = (ing.get('cost', 0.0) / conc) * 100.0 if conc > 0 else 0
+                entry['cost'] = quantity * eff_cost
+                total_cost += entry['cost']
+                if ing.get('note_type') == 'Solvent':
+                    solvent_grams += quantity
+                else:
+                    concentrate_grams += quantity
         total_grams = concentrate_grams + solvent_grams
-
         for entry in formulation.get('entries', []):
-            ing = self.get_ingredient_by_name(entry.get('ingredient_name'))
-            if not ing:
-                continue
-
             quantity = entry.get('quantity', 0.0)
-            if ing.get('note_type') == 'Solvent':
-                # For solvents, calculate percentage of the total formula
+            ing = self.get_ingredient_by_name(entry.get('ingredient_name'))
+            if ing and ing.get('note_type') == 'Solvent':
                 entry['percentage'] = (quantity / total_grams) * 100 if total_grams > 0 else 0
             else:
-                # For aromatics, calculate percentage within the concentrate
                 entry['percentage'] = (quantity / concentrate_grams) * 100 if concentrate_grams > 0 else 0
-
         formulation.update({
             'calculated_concentrate_grams': concentrate_grams,
             'calculated_solvent_grams': solvent_grams,
@@ -182,20 +254,10 @@ class DataManager:
         })
 
     def scale_formulation(self, original_formula, new_name, method, value):
-        """
-        Creates a new, scaled formulation based on an original.
-
-        :param original_formula: The formula dictionary to scale.
-        :param new_name: The name for the new scaled formula.
-        :param method: The string name of the scaling method.
-        :param value: The numerical value for the scaling operation.
-        :return: The new formula dictionary if successful, None otherwise.
-        """
         self.calculate_formulation_totals(original_formula)
         current_concentrate = original_formula.get('calculated_concentrate_grams', 0.0)
         current_total = original_formula.get('calculated_total_grams', 0.0)
         scaling_factor = 1.0
-
         if method == "By Factor":
             if value <= 0: return None
             scaling_factor = value
@@ -212,163 +274,113 @@ class DataManager:
             if current_concentrate == 0: return None
             scaling_factor = 100.0 / current_concentrate
         else:
-            return None  # Unknown method
-
+            return None
         new_entries = []
         for entry in original_formula.get('entries', []):
-            # For "Normalize", we skip solvents entirely, creating a pure compound.
             if method == "Normalize Concentrate to 100g":
                 ing = self.get_ingredient_by_name(entry.get('ingredient_name'))
                 if ing and ing.get('note_type') == 'Solvent':
                     continue
-
             new_entry = entry.copy()
             new_entry['quantity'] = new_entry.get('quantity', 0.0) * scaling_factor
             new_entries.append(new_entry)
-
         new_formula = {
-            "name": new_name,
-            "unit": "gram",
-            "entries": new_entries
+            "name": new_name, "unit": "gram", "entries": new_entries,
+            "is_accord": original_formula.get('is_accord', False)
         }
-
-        self.data['formulations'].append(new_formula)
+        self.save_formulation(new_formula)
         return new_formula
 
-    def export_ingredients_to_txt(self, filepath):
-        """Exports the full ingredient library to a formatted text file."""
+    def get_setting(self, key):
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write("Formul8 Ingredient Library Export\n")
-                f.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("=" * 40 + "\n\n")
+            cur = self.conn.cursor()
+            cur.execute("SELECT value FROM settings WHERE key=?", (key,))
+            row = cur.fetchone()
+            return json.loads(row['value']) if row else None
+        except (sqlite3.Error, json.JSONDecodeError) as e:
+            print(f"Database error getting setting '{key}': {e}")
+            return None
 
-                for ing in sorted(self.data['ingredients'], key=lambda x: x.get('name', '')):
-                    f.write(f"Ingredient: {ing.get('name', 'N/A')}\n")
-                    f.write(f"  - Concentration: {ing.get('concentration', 100.0):.2f}%\n")
-                    f.write(f"  - Cost per Gram: ${ing.get('cost', 0.0):.2f}\n")
-                    f.write(f"  - Note Type: {ing.get('note_type', 'N/A')}\n")
-                    f.write(f"  - Categories: {ing.get('primary_category', '')}, {ing.get('secondary_category', '')}\n")
-                    f.write(f"  - Supplier: {ing.get('supplier', '')}\n")
-                    f.write(f"  - Notes: {ing.get('notes', '')}\n\n")
-            return True, None
-        except Exception as e:
-            return False, str(e)
-
-    def export_ingredients_to_pdf(self, filepath):
-        """Exports the full ingredient library to a PDF file."""
+    def save_setting(self, key, value):
         try:
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Helvetica", size=16, style='B')
-            pdf.cell(0, 10, "Ingredient Library", ln=True, align='C')
-            pdf.set_font("Helvetica", size=8)
-            pdf.cell(0, 5, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align='C')
-            pdf.ln(10)
+            cur = self.conn.cursor()
+            cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, json.dumps(value)))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            print(f"Database error saving setting '{key}': {e}")
 
-            pdf.set_font("Helvetica", size=10, style='B')
-            col_widths = [50, 20, 20, 20, 50]
-            headers = ['Ingredient', 'Conc.', 'Note', 'Cost/g', 'Categories']
-            for header, width in zip(headers, col_widths):
-                pdf.cell(width, 7, header, border=1, align='C')
-            pdf.ln()
+    def add_list_item(self, list_key, item_value):
+        """Adds a new unique item to a specified list in settings."""
+        item_value = item_value.strip()
+        if not item_value:
+            return False
 
-            pdf.set_font("Helvetica", size=9)
-            for ing in sorted(self.data['ingredients'], key=lambda x: x.get('name', '')):
-                cats = f"{ing.get('primary_category', '')}, {ing.get('secondary_category', '')}".strip(', ')
-                row = [
-                    ing.get('name', ''),
-                    f"{ing.get('concentration', 100.0):.1f}%",
-                    ing.get('note_type', ''),
-                    f"${ing.get('cost', 0.0):.2f}",
-                    cats
-                ]
-                for item, width in zip(row, col_widths):
-                    pdf.cell(width, 6, str(item), border=1)
-                pdf.ln()
+        current_list = self.get_setting(list_key) or []
+        if any(existing.lower() == item_value.lower() for existing in current_list):
+            return False
 
-            pdf.output(filepath)
-            return True, None
-        except Exception as e:
-            return False, str(e)
+        current_list.append(item_value)
+        self.save_setting(list_key, current_list)
+        return True
 
-    def export_formula_to_txt(self, formula, filepath):
-        """Exports a single formula to a formatted text file."""
-        try:
-            self.calculate_formulation_totals(formula)  # Ensure totals are fresh
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"Formulation: {formula.get('name', 'N/A')}\n")
-                f.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("=" * 40 + "\n")
-                f.write(f"Total Weight: {formula.get('calculated_total_grams', 0.0):.2f}g\n")
-                f.write(f"Concentrate Weight: {formula.get('calculated_concentrate_grams', 0.0):.2f}g\n")
-                f.write(f"Solvent Weight: {formula.get('calculated_solvent_grams', 0.0):.2f}g\n")
-                f.write(f"Concentrate Strength: {formula.get('calculated_concentrate_strength', 0.0):.2f}%\n")
-                f.write(f"Total Cost: ${formula.get('calculated_total_cost', 0.0):.2f}\n")
-                f.write("-" * 40 + "\n\n")
+    def tweak_accord_ingredient(self, accord_name, ingredient_name, new_percentage):
+        """
+        Adjusts an ingredient's percentage in an accord and proportionally scales the others.
+        """
+        accord = self.get_formulation_by_name(accord_name)
+        if not accord or not accord['is_accord']:
+            return False
 
-                f.write(f"{'Ingredient':<30} {'Qty (g)':>10} {'% in Conc.':>12} {'Cost':>10}\n")
-                f.write(f"{'-' * 30} {'-' * 10} {'-' * 12} {'-' * 10}\n")
+        # First, ensure percentages are up to date
+        self.calculate_formulation_totals(accord)
 
-                for entry in sorted(formula['entries'], key=lambda x: x['ingredient_name']):
-                    ing = self.get_ingredient_by_name(entry['ingredient_name'])
-                    percent_str = f"{entry.get('percentage', 0.0):.2f}%" if ing.get('note_type') != 'Solvent' else "N/A"
+        # Find the target entry and other entries
+        target_entry = None
+        other_entries = []
+        for e in accord['entries']:
+            if e['ingredient_name'].lower() == ingredient_name.lower():
+                target_entry = e
+            else:
+                other_entries.append(e)
 
-                    f.write(
-                        f"{entry['ingredient_name']:<30} {entry.get('quantity', 0.0):>10.4f} {percent_str:>12} ${entry.get('cost', 0.0):>9.2f}\n")
-            return True, None
-        except Exception as e:
-            return False, str(e)
+        if not target_entry or new_percentage < 0 or new_percentage > 100:
+            return False
 
-    def export_formula_to_pdf(self, formula, filepath):
-        """Exports a single formula to a PDF file."""
-        try:
-            self.calculate_formulation_totals(formula)  # Ensure totals are fresh
-            pdf = FPDF()
-            pdf.add_page()
+        # Calculate the total percentage of the other items
+        other_total_percent = sum(e.get('percentage', 0.0) for e in other_entries)
+        if other_total_percent <= 0:
+            # If there are no other ingredients to scale, we can't do a proportional tweak.
+            return False
 
-            # Title
-            pdf.set_font("Helvetica", size=20, style='B')
-            pdf.cell(0, 10, f"Formulation: {formula.get('name', 'N/A')}", ln=True, align='C')
-            pdf.ln(5)
+        # Calculate the new total and the scaling factor for other ingredients
+        remaining_percent = 100.0 - new_percentage
+        scale_factor = remaining_percent / other_total_percent
 
-            # Summary Box
-            pdf.set_font("Helvetica", size=10)
-            summary_text = (
-                f"Total Weight: {formula.get('calculated_total_grams', 0.0):.2f}g\n"
-                f"Concentrate Weight: {formula.get('calculated_concentrate_grams', 0.0):.2f}g\n"
-                f"Concentrate Strength: {formula.get('calculated_concentrate_strength', 0.0):.2f}%\n"
-                f"Total Cost: ${formula.get('calculated_total_cost', 0.0):.2f}"
+        # Update quantities: new quantity = (new percentage / 100) * total_concentrate_weight
+        # To do this, we first need the original total concentrate weight.
+        original_concentrate_weight = accord.get('calculated_concentrate_grams', 0.0)
+        if original_concentrate_weight <= 0:
+            return False  # Cannot scale a zero-quantity formula
+
+        # Update the target ingredient's quantity
+        target_entry['quantity'] = (new_percentage / 100.0) * original_concentrate_weight
+
+        # Update all other ingredients' quantities
+        for entry in other_entries:
+            original_percent = entry.get('percentage', 0.0)
+            scaled_percent = original_percent * scale_factor
+            entry['quantity'] = (scaled_percent / 100.0) * original_concentrate_weight
+
+        # Save the updated formulation
+        self.save_formulation(accord)
+
+        # Update the accord's "ingredient" representation with the new cost
+        accord_ing = self.get_ingredient_by_name(accord_name)
+        if accord_ing:
+            self.create_accord_as_ingredient(
+                accord,
+                accord_ing.get('note_type'),
+                accord_ing.get('primary_category'),
+                accord_ing.get('secondary_category')
             )
-            pdf.multi_cell(0, 6, summary_text, border=1, align='L')
-            pdf.ln(10)
-
-            # Table Header
-            pdf.set_font("Helvetica", size=10, style='B')
-            col_widths = [80, 30, 30, 30]
-            headers = ['Ingredient', 'Quantity (g)', '% in Conc.', 'Cost']
-            for header, width in zip(headers, col_widths):
-                pdf.cell(width, 7, header, border=1, align='C')
-            pdf.ln()
-
-            # Table Rows
-            pdf.set_font("Helvetica", size=9)
-            for entry in sorted(formula['entries'], key=lambda x: x['ingredient_name']):
-                ing = self.get_ingredient_by_name(entry['ingredient_name'])
-                percent_str = f"{entry.get('percentage', 0.0):.2f}%" if ing.get('note_type') != 'Solvent' else "N/A"
-                row = [
-                    entry['ingredient_name'],
-                    f"{entry.get('quantity', 0.0):.4f}",
-                    percent_str,
-                    f"${entry.get('cost', 0.0):.2f}"
-                ]
-                pdf.cell(col_widths[0], 6, row[0], border=1)
-                pdf.cell(col_widths[1], 6, row[1], border=1, align='R')
-                pdf.cell(col_widths[2], 6, row[2], border=1, align='R')
-                pdf.cell(col_widths[3], 6, row[3], border=1, align='R')
-                pdf.ln()
-
-            pdf.output(filepath)
-            return True, None
-        except Exception as e:
-            return False, str(e)
+        return True

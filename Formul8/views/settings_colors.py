@@ -7,10 +7,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal
 
-# --- Local Imports ---
-# REMOVED: from ..data_manager import data_manager
-
-
 class ScentProfileSettingsFrame(QWidget):
     """
     Allows the user to customize the colors associated with each scent category.
@@ -18,10 +14,8 @@ class ScentProfileSettingsFrame(QWidget):
     """
     back_signal = pyqtSignal()
 
-    # UPDATED: The constructor now accepts the data_manager instance.
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
-        # RATIONALE: The passed-in DataManager is stored as an instance variable.
         self.data_manager = data_manager
 
         main_layout = QVBoxLayout(self)
@@ -55,17 +49,14 @@ class ScentProfileSettingsFrame(QWidget):
         """
         Dynamically creates a row for each scent category with a color picker button.
         """
-        # Clear any existing widgets
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
 
-        # UPDATED: Uses the instance variable self.data_manager
-        settings = self.data_manager.data['settings']
-        categories = sorted(settings.get('scent_categories', []))
-        color_map = settings.get('scent_profile_colors', {})
+        categories = sorted(self.data_manager.get_setting('scent_categories') or [])
+        color_map = self.data_manager.get_setting('scent_profile_colors') or {}
         default_color = "#808080"
 
         for category in categories:
@@ -81,7 +72,6 @@ class ScentProfileSettingsFrame(QWidget):
             color_button.setFixedSize(150, 40)
             self._update_button_style(color_button, color_hex)
 
-            # Use a lambda to capture the specific category and button for the slot
             color_button.clicked.connect(
                 lambda _, cat=category, btn=color_button: self._on_color_button_clicked(cat, btn)
             )
@@ -107,15 +97,14 @@ class ScentProfileSettingsFrame(QWidget):
 
     def _on_color_button_clicked(self, category, button):
         """ Opens a color dialog and updates the setting if a new color is chosen. """
-        # UPDATED: Uses the instance variable self.data_manager
-        current_color_hex = self.data_manager.data['settings']['scent_profile_colors'].get(category, "#808080")
+        color_map = self.data_manager.get_setting('scent_profile_colors') or {}
+        current_color_hex = color_map.get(category, "#808080")
         new_color = QColorDialog.getColor(QColor(current_color_hex), self, f"Select Color for {category}")
 
         if new_color.isValid():
             new_hex = new_color.name()
-            # UPDATED: Uses the instance variable self.data_manager
-            self.data_manager.data['settings']['scent_profile_colors'][category] = new_hex
-            self.data_manager.save_data()
+            color_map[category] = new_hex
+            self.data_manager.save_setting('scent_profile_colors', color_map)
 
             button.setText(new_hex.upper())
             self._update_button_style(button, new_hex)

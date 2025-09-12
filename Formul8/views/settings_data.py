@@ -11,9 +11,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, Qt
 
 # --- Local Imports ---
-# REMOVED: from ..data_manager import data_manager
-from ..ui_components import CustomMessageBox
-
+from ..components import CustomMessageBox
+from ..database import get_db_path
 
 class DataManagementFrame(QWidget):
     """
@@ -21,12 +20,9 @@ class DataManagementFrame(QWidget):
     """
     back_signal = pyqtSignal()
 
-    # UPDATED: The constructor now accepts the data_manager instance.
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
         self.setObjectName("DataManagementFrame")
-
-        # RATIONALE: The passed-in DataManager is stored as an instance variable.
         self.data_manager = data_manager
 
         main_layout = QVBoxLayout(self)
@@ -78,15 +74,16 @@ class DataManagementFrame(QWidget):
 
     def _backup_data(self):
         """ Copies the current data file to a user-selected location. """
-        default_name = f"formul8_backup_{datetime.now().strftime('%Y%m%d')}.json"
-        # UPDATED: Uses the instance variable self.data_manager
-        source_file = self.data_manager.data_file
+        default_name = f"formul8_backup_{datetime.now().strftime('%Y%m%d')}.db"
+        source_file = get_db_path()
 
-        path, _ = QFileDialog.getSaveFileName(self, "Backup Data File", default_name, "JSON Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Backup Database File", default_name, "SQLite Database (*.db)")
         if path:
             try:
+                # Ensure the data is committed before copying
+                self.data_manager.save_data()
                 shutil.copy(source_file, path)
-                QMessageBox.information(self, "Backup Successful", f"Data successfully backed up to:\n{path}")
+                QMessageBox.information(self, "Backup Successful", f"Database successfully backed up to:\n{path}")
             except Exception as e:
                 QMessageBox.critical(self, "Backup Error", f"Could not create backup:\n{e}")
 
@@ -99,11 +96,12 @@ class DataManagementFrame(QWidget):
         if reply != QDialogButtonBox.StandardButton.Yes:
             return
 
-        path, _ = QFileDialog.getOpenFileName(self, "Select Backup File to Restore", "", "JSON Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Backup File to Restore", "", "SQLite Database (*.db)")
         if path:
             try:
-                # UPDATED: Uses the instance variable self.data_manager
-                destination_file = self.data_manager.data_file
+                # Close the current DB connection before overwriting the file
+                self.data_manager.conn.close()
+                destination_file = get_db_path()
                 shutil.copy(path, destination_file)
                 QMessageBox.information(self, "Restore Successful",
                                         "Data successfully restored.\nThe application will now restart.")

@@ -14,7 +14,8 @@ from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QPen, QResizeEvent,
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal, QTimer
 
 # --- Local Imports ---
-from ..ui_components import CustomDialog, CustomMessageBox
+from ..components import CustomDialog, CustomMessageBox
+from ..constants import ACCORD_SYMBOL
 
 
 class ScentFingerprintWidget(QWidget):
@@ -45,8 +46,10 @@ class ScentFingerprintWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         center = QPointF(self.rect().center());
         radius = min(center.x(), center.y()) - 5
-        categories = sorted(
-            [cat for cat in self.data_manager.data['settings']['scent_categories'] if cat in self.category_percentages])
+
+        all_categories = self.data_manager.get_setting('scent_categories') or []
+        categories = sorted([cat for cat in all_categories if cat in self.category_percentages])
+
         if not categories: return
         num_cats = len(categories);
         angle_step = 360 / num_cats
@@ -66,13 +69,14 @@ class ScentFingerprintWidget(QWidget):
                 QPointF(center.x() + point_radius * math.cos(angle), center.y() + point_radius * math.sin(angle)))
         fingerprint_polygon = QPolygonF(points);
         gradient = QConicalGradient(center, -90);
-        color_map = self.data_manager.data['settings'].get('scent_profile_colors', {});
+        color_map = self.data_manager.get_setting('scent_profile_colors') or {};
         default_color = QColor("#808080")
         for i, category in enumerate(categories): color = QColor(
             color_map.get(category, default_color.name())); position = i / num_cats; gradient.setColorAt(position,
                                                                                                          color)
-        first_color = QColor(color_map.get(categories[0], default_color.name()));
-        gradient.setColorAt(1.0, first_color)
+        if categories:
+            first_color = QColor(color_map.get(categories[0], default_color.name()));
+            gradient.setColorAt(1.0, first_color)
         painter.setBrush(QBrush(gradient));
         painter.setPen(QPen(QColor("#5c6370"), 1));
         painter.drawPolygon(fingerprint_polygon)
@@ -98,7 +102,6 @@ class ExportChoiceDialog(QDialog):
         self.accept()
 
 
-# --- REFACTORED: Inherits from QDialog directly to bypass animation issues ---
 class ScaleFormulationDialog(QDialog):
     def __init__(self, formula_name, parent=None):
         super().__init__(parent)
@@ -181,7 +184,7 @@ class ViewEditFormulationsFrame(QWidget):
         super().__init__(parent)
         self.data_manager = data_manager
         self.selected_formula_name = None
-        self.view_mode = self.data_manager.data['settings'].get('default_formulation_view', 'grid')
+        self.view_mode = self.data_manager.get_setting('default_formulation_view') or 'grid'
 
         main_layout = QVBoxLayout(self)
         top_bar = QHBoxLayout()
@@ -225,7 +228,7 @@ class ViewEditFormulationsFrame(QWidget):
     def build_view(self):
         content_container = QWidget()
         search_term = self.search_entry.text().lower()
-        formulations = self.data_manager.data['formulations']
+        formulations = self.data_manager.get_all_formulations()
         filtered = [f for f in formulations if
                     search_term in f.get('name', '').lower()] if search_term else formulations
         sorted_formulations = sorted(filtered, key=lambda x: x.get('name', ''))
@@ -259,14 +262,19 @@ class ViewEditFormulationsFrame(QWidget):
 
     def _update_view_toggle_button(self):
         if self.view_mode == 'list':
-            self.toggle_view_btn.setChecked(True); self.toggle_view_btn.setText("❖"); self.toggle_view_btn.setToolTip(
+            self.toggle_view_btn.setChecked(True);
+            self.toggle_view_btn.setText("❖");
+            self.toggle_view_btn.setToolTip(
                 "Switch to Grid View")
         else:
-            self.toggle_view_btn.setChecked(False); self.toggle_view_btn.setText("☰"); self.toggle_view_btn.setToolTip(
+            self.toggle_view_btn.setChecked(False);
+            self.toggle_view_btn.setText("☰");
+            self.toggle_view_btn.setToolTip(
                 "Switch to List View")
 
     def toggle_view(self):
         self.view_mode = 'list' if self.view_mode == 'grid' else 'grid';
+        self.data_manager.save_setting('default_formulation_view', self.view_mode)
         self._update_view_toggle_button();
         self.build_view()
 
@@ -278,7 +286,11 @@ class ViewEditFormulationsFrame(QWidget):
         card.setMinimumSize(240, 200);
         card.setMaximumSize(260, 220)
         card_layout = QVBoxLayout(card);
-        name_label = QLabel(formula.get('name', ''));
+
+        name_text = f"{formula.get('name', '')} {ACCORD_SYMBOL}" if formula.get('is_accord') else formula.get('name',
+                                                                                                              '')
+        name_label = QLabel(name_text)
+
         name_label.setObjectName("CardHeaderLabel");
         name_label.setWordWrap(True);
         card_layout.addWidget(name_label);
@@ -310,7 +322,11 @@ class ViewEditFormulationsFrame(QWidget):
         text_layout = QVBoxLayout(text_container);
         text_layout.setContentsMargins(0, 0, 0, 0);
         text_layout.setSpacing(5)
-        name_label = QLabel(formula.get('name', ''));
+
+        name_text = f"{formula.get('name', '')} {ACCORD_SYMBOL}" if formula.get('is_accord') else formula.get('name',
+                                                                                                              '')
+        name_label = QLabel(name_text)
+
         name_label.setObjectName("CardHeaderLabel");
         name_label.setWordWrap(True)
         self.data_manager.calculate_formulation_totals(formula)
@@ -348,12 +364,20 @@ class ViewEditFormulationsFrame(QWidget):
                     self.selected_formula_name): self.edit_formulation_signal.emit(formula)
 
     def delete_selected_formulation(self):
-        if not (self.selected_formula_name and (
-                formula := self.data_manager.get_formulation_by_name(self.selected_formula_name))): return
-        reply = CustomMessageBox.question(self, "Confirm Delete",
-                                          f"Are you sure you want to delete '{formula['name']}'?")
-        if reply == QDialogButtonBox.StandardButton.Yes: self.data_manager.data['formulations'].remove(
-            formula); self.data_manager.save_data(); self.selected_formula_name = None; self.build_view()
+        if not self.selected_formula_name:
+            return
+        formula = self.data_manager.get_formulation_by_name(self.selected_formula_name)
+        if not formula:
+            return
+
+        item_type_str = "accord" if formula.get('is_accord') else "formulation"
+        reply = CustomMessageBox.question(self, f"Confirm Delete",
+                                          f"Are you sure you want to delete the {item_type_str} '{formula['name']}'?")
+
+        if reply == QDialogButtonBox.StandardButton.Yes:
+            self.data_manager.delete_formulation(formula['name'])
+            self.selected_formula_name = None
+            self.build_view()
 
     def scale_selected_formulation(self):
         if not (self.selected_formula_name and (
@@ -366,14 +390,14 @@ class ViewEditFormulationsFrame(QWidget):
 
         new_name, method, value = dialog.get_values()
 
-        if not new_name or self.data_manager.get_formulation_by_name(new_name):
+        if not new_name or (
+                new_name.lower() != formula['name'].lower() and self.data_manager.get_formulation_by_name(new_name)):
             CustomMessageBox.warning(self, "Invalid Name", "New formula name cannot be empty and must be unique.")
             return
 
         new_formula = self.data_manager.scale_formulation(formula, new_name, method, value)
 
         if new_formula:
-            self.data_manager.save_data()
             self.build_view()
             QMessageBox.information(self, "Success", f"Formula scaled and saved as '{new_name}'.")
         else:
@@ -402,7 +426,7 @@ class ViewEditFormulationsFrame(QWidget):
 
         elif choice_dialog.format == 'pdf':
             default_name = f"{formula.get('name', 'formula')}.pdf"
-            path, _ = QFileDialog.getSaveFileName(self, "Export Formula as PDF", default_name, "PDF Documents (*.pdf)")
+            path, _ = QFileDialog.getSaveFileName(self, "Export Library as PDF", default_name, "PDF Documents (*.pdf)")
             if path:
                 success, error_msg = self.data_manager.export_formula_to_pdf(formula, path)
                 if success:

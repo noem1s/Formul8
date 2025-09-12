@@ -8,8 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 
 # --- Local Imports ---
-# REMOVED: from ..data_manager import data_manager
-from ..ui_components import CustomMessageBox
+from ..components import CustomMessageBox
 
 
 class GenericListManagementFrame(QWidget):
@@ -20,12 +19,10 @@ class GenericListManagementFrame(QWidget):
     """
     back_signal = pyqtSignal()
 
-    # UPDATED: The constructor now accepts the data_manager instance.
     def __init__(self, list_key, title, data_manager, parent=None):
         super().__init__(parent)
         self.list_key = list_key
         self.title = title
-        # RATIONALE: The passed-in DataManager is stored as an instance variable.
         self.data_manager = data_manager
 
         main_layout = QVBoxLayout(self)
@@ -68,8 +65,7 @@ class GenericListManagementFrame(QWidget):
 
     def _get_list(self):
         """ Safely gets the list from the data manager's settings. """
-        # UPDATED: Uses the instance variable self.data_manager
-        return self.data_manager.data['settings'].get(self.list_key, [])
+        return self.data_manager.get_setting(self.list_key) or []
 
     def _populate_list_widget(self):
         """ Clears and repopulates the list widget from the data source. """
@@ -85,8 +81,7 @@ class GenericListManagementFrame(QWidget):
                 QMessageBox.warning(self, "Duplicate", f"'{text}' already exists in this list.")
                 return
             current_list.append(text)
-            # UPDATED: Uses the instance variable self.data_manager
-            self.data_manager.save_data()
+            self.data_manager.save_setting(self.list_key, current_list)
             self._populate_list_widget()
 
     def _edit_item(self):
@@ -108,8 +103,7 @@ class GenericListManagementFrame(QWidget):
             try:
                 index = current_list.index(old_text)
                 current_list[index] = new_text
-                # UPDATED: Uses the instance variable self.data_manager
-                self.data_manager.save_data()
+                self.data_manager.save_setting(self.list_key, current_list)
                 self._populate_list_widget()
             except ValueError:
                 pass  # Item might have been deleted
@@ -127,8 +121,7 @@ class GenericListManagementFrame(QWidget):
             try:
                 current_list = self._get_list()
                 current_list.remove(selected_item.text())
-                # UPDATED: Uses the instance variable self.data_manager
-                self.data_manager.save_data()
+                self.data_manager.save_setting(self.list_key, current_list)
                 self._populate_list_widget()
             except ValueError:
                 pass  # Item might have been deleted

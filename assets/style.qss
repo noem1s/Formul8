@@ -109,10 +109,28 @@ QTreeWidget::item:selected, QListWidget::item:selected {
     color: #ffffff;
 }
 
+QTreeWidget::branch {
+    background-color: transparent;
+}
+QTreeWidget::branch:closed:has-children {
+    image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><polygon points="2,0 8,5 2,10" fill="%23abb2bf"/></svg>');
+}
+QTreeWidget::branch:open:has-children {
+    image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><polygon points="0,2 10,2 5,8" fill="%23abb2bf"/></svg>');
+}
+QTreeWidget::branch:closed:has-children:!selected:hover {
+    image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><polygon points="2,0 8,5 2,10" fill="%239881a7"/></svg>');
+}
+QTreeWidget::branch:open:has-children:!selected:hover {
+    image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><polygon points="0,2 10,2 5,8" fill="%239881a7"/></svg>');
+}
+
+/* --- MODIFIED: Added border-radius --- */
 QMenu {
     background-color: #282c34;
     border: 1px solid #5c6370;
     padding: 5px;
+    border-radius: 4px;
 }
 QMenu::item {
     padding: 5px 25px 5px 20px;
@@ -134,6 +152,9 @@ QHeaderView::section {
     padding: 4px;
     border: 1px solid #5c6370;
     font-weight: bold;
+}
+QHeaderView::section:hover {
+    background-color: #4a505b;
 }
 
 QTabBar {
@@ -218,7 +239,6 @@ QLabel#StatusLabel[error="true"] {
     color: #e06c75;
 }
 
-/* --- MODIFIED TO HIDE SCROLLBAR --- */
 QScrollBar:vertical {
     border: none;
     background: transparent;
@@ -235,7 +255,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;
 }
-/* ------------------------------------ */
 
 QScrollBar:horizontal {
     border: none;

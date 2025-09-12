@@ -6,19 +6,24 @@ import math
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, QLineEdit,
-    QGroupBox, QFrame, QColorDialog, QDoubleSpinBox, QTreeWidgetItem, QMenu
+    QGroupBox, QFrame, QColorDialog, QDoubleSpinBox, QTreeWidgetItem, QMenu,
+    QStackedLayout, QStyle, QHeaderView
 )
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QPaintEvent, QPalette
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QSettings
+from PyQt6.QtGui import QPainter, QColor, QBrush, QPolygonF, QPaintEvent, QPalette, QCursor
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QSettings, QPoint
 
 # --- Third-party Libraries ---
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 # --- Local Imports ---
-# REMOVED: from ..data_manager import data_manager
-from ..ui_components import CustomDialog, CustomMessageBox, DragAndDropTree
-from ..constants import NOTE_TYPES
+from ..components import (
+    CustomDialog, CustomMessageBox, DragAndDropTree, SaveAsDialog, AccordItemWidget,
+    create_fading_tree_widget, TweakDialog, update_fades
+)
+from ..constants import ACCORD_SYMBOL, NOTE_TYPES
+from ..utils import format_for_display, populate_ingredient_tree
+from ..context_menu_handler import handle_tree_context_menu
 
 
 class PyramidWidget(QWidget):
@@ -43,6 +48,7 @@ class PyramidWidget(QWidget):
             for entry in concentrate_entries:
                 ing_data = self.data_manager.get_ingredient_by_name(entry.get('ingredient_name'))
                 if ing_data:
+                    # RATIONALE: Use note_type for pyramid, not primary_category
                     totals[ing_data.get('note_type', 'Other')] += entry.get('quantity', 0.0)
             self.percentages = {key: (value / total_quantity) * 100 for key, value in totals.items()}
         else:
@@ -84,6 +90,7 @@ class PyramidWidget(QWidget):
 class PyramidWindow(CustomDialog):
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.data_manager = data_manager
         self.setWindowTitle("Formula Pyramid (Live)")
         self.setMinimumSize(450, 500)
@@ -106,6 +113,7 @@ class PyramidWindow(CustomDialog):
 class ScentProfileWindow(CustomDialog):
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.data_manager = data_manager
         self.setWindowTitle("Scent Profile Analysis (Live)")
         self.setMinimumSize(800, 550)
@@ -135,7 +143,7 @@ class ScentProfileWindow(CustomDialog):
                 category = ing_data.get('primary_category', 'Uncategorized')
                 totals[category] = totals.get(category, 0) + entry.get('quantity', 0.0)
 
-        color_map = self.data_manager.data['settings'].get('scent_profile_colors', {})
+        color_map = self.data_manager.get_setting('scent_profile_colors') or {}
         labels = list(totals.keys())
         colors = [color_map.get(label, "#808080") for label in labels]
 
@@ -162,6 +170,8 @@ class CreateFormulationFrame(QWidget):
         self.formulation_entries = []
         self.pyramid_window = None
         self.scent_profile_window = None
+        self.available_sort_state = (None, None)  # (column_index, order)
+        self.formulation_sort_state = (None, None)  # (column_index, order)
 
         main_layout = QVBoxLayout(self)
 
@@ -177,24 +187,59 @@ class CreateFormulationFrame(QWidget):
         main_layout.addWidget(details_group)
         content_layout = QHBoxLayout();
         content_layout.setSpacing(15)
+
+        # --- AVAILABLE INGREDIENTS PANEL ---
         available_panel = QGroupBox("Available Ingredients (Drag to add)");
         available_layout = QVBoxLayout(available_panel);
-        self.available_ing_tree = DragAndDropTree();
-        self.available_ing_tree.setHeaderLabels(["Ingredient", "Conc", "Note", "Cat 1", "Cat 2", "Cost / g"]);
-        self.available_ing_tree.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter);
-        self.available_ing_tree.ingredient_dropped_in.connect(self.remove_ingredient_from_formula);
-        available_layout.addWidget(self.available_ing_tree);
+
+        self.ing_search_bar = QLineEdit()
+        self.ing_search_bar.setPlaceholderText("Search for an ingredient...")
+        self.ing_search_bar.textChanged.connect(self._filter_available_ingredients)
+        available_layout.addWidget(self.ing_search_bar)
+
+        available_ing_container, self.available_ing_tree, self.avail_top_fade, self.avail_bottom_fade = create_fading_tree_widget(
+            DragAndDropTree)
+        self.available_ing_tree.setColumnCount(6)
+        self.available_ing_tree.setHeaderLabels(["Ingredient", "Conc", "Note", "Cat 1", "Cat 2", "Cost / g"])
+        self.available_ing_tree.header().setSectionsClickable(True)
+        self.available_ing_tree.setSortingEnabled(True)
+        self.available_ing_tree.header().sectionClicked.connect(
+            lambda index: self._handle_sort_request(self.available_ing_tree, index)
+        )
+        self.available_ing_tree.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.available_ing_tree.ingredient_dropped_in.connect(self.remove_ingredient_from_formula)
+        self.available_ing_tree.itemExpanded.connect(self._update_accord_indicator)
+        self.available_ing_tree.itemCollapsed.connect(self._update_accord_indicator)
+        self.available_ing_tree.itemSelectionChanged.connect(self._on_selection_changed)
+
+        available_layout.addWidget(available_ing_container)
         content_layout.addWidget(available_panel, 1)
+
+        # --- CURRENT FORMULATION PANEL ---
         current_panel = QGroupBox("Current Formulation (Drag out to remove)");
         current_layout = QVBoxLayout(current_panel);
-        self.formulation_tree = DragAndDropTree();
-        self.formulation_tree.setHeaderLabels(["Ingredient", "Quantity", "Unit", "% in Conc.", "Cost"]);
-        self.formulation_tree.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter);
-        self.formulation_tree.ingredient_dropped_in.connect(self.add_ingredient_to_formula);
-        self.formulation_tree.itemDoubleClicked.connect(self.on_cell_double_click);
-        self.formulation_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu);
-        self.formulation_tree.customContextMenuRequested.connect(self.show_highlight_menu);
-        current_layout.addWidget(self.formulation_tree)
+
+        formulation_tree_container, self.formulation_tree, self.form_top_fade, self.form_bottom_fade = create_fading_tree_widget(
+            DragAndDropTree)
+        self.formulation_tree.setObjectName("FormulationCreatorTree")
+        self.formulation_tree.setColumnCount(5)
+        self.formulation_tree.setHeaderLabels(["Ingredient", "Quantity", "Unit", "% in Conc.", "Cost"])
+        self.formulation_tree.header().setSectionsClickable(True)
+        self.formulation_tree.setSortingEnabled(True)
+        self.formulation_tree.header().sectionClicked.connect(
+            lambda index: self._handle_sort_request(self.formulation_tree, index)
+        )
+        self.formulation_tree.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.formulation_tree.ingredient_dropped_in.connect(self.add_ingredient_to_formula)
+        self.formulation_tree.itemDoubleClicked.connect(self.on_cell_double_click)
+        self.formulation_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.formulation_tree.customContextMenuRequested.connect(self.show_context_menu)
+        self.formulation_tree.itemExpanded.connect(self._update_accord_indicator)
+        self.formulation_tree.itemCollapsed.connect(self._update_accord_indicator)
+        self.formulation_tree.itemSelectionChanged.connect(self._on_selection_changed)
+
+        current_layout.addWidget(formulation_tree_container)
+
         totals_frame = QFrame();
         totals_frame.setObjectName("CardFrame");
         totals_layout = QHBoxLayout(totals_frame);
@@ -217,7 +262,7 @@ class CreateFormulationFrame(QWidget):
         main_layout.addLayout(content_layout)
 
         # --- Bottom Buttons ---
-        self.save_button = QPushButton("Save Formulation")
+        self.save_button = QPushButton("Save...")
         self.save_button.clicked.connect(self.save_formulation)
         clear_button = QPushButton("Clear All")
         clear_button.clicked.connect(self.reset_formulation_creation)
@@ -226,11 +271,10 @@ class CreateFormulationFrame(QWidget):
         profile_button = QPushButton("Scent Profile")
         profile_button.clicked.connect(self.show_scent_profile_view)
 
-        # Create layouts for two button groups to align with the panels above
         left_buttons_layout = QHBoxLayout()
         left_buttons_layout.setSpacing(15)
         left_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        left_buttons_layout.addStretch()  # Pushes buttons to the right
+        left_buttons_layout.addStretch()
         left_buttons_layout.addWidget(self.save_button)
         left_buttons_layout.addWidget(clear_button)
 
@@ -239,11 +283,9 @@ class CreateFormulationFrame(QWidget):
         right_buttons_layout.setContentsMargins(0, 0, 0, 0)
         right_buttons_layout.addWidget(pyramid_button)
         right_buttons_layout.addWidget(profile_button)
-        right_buttons_layout.addStretch()  # Pushes buttons to the left
+        right_buttons_layout.addStretch()
 
-        # Main bottom bar that holds the two button groups
         bottom_bar = QHBoxLayout()
-        # This spacing becomes the gap in the middle, matching the panel gap
         bottom_bar.setSpacing(15)
         bottom_bar.addLayout(left_buttons_layout, 1)
         bottom_bar.addLayout(right_buttons_layout, 1)
@@ -255,8 +297,89 @@ class CreateFormulationFrame(QWidget):
         self.status_timer.timeout.connect(self.status_label.clear)
 
     def on_show(self):
-        self.populate_available_ingredients()
+        # Also called by the tweak handler to refresh the view
+        self.update_current_formula_display()
+        self._filter_available_ingredients()
         self.load_column_widths()
+        QTimer.singleShot(0, self._initial_fade_update)
+        QTimer.singleShot(0, self._adjust_fade_positions)
+
+    def _adjust_fade_positions(self):
+        """
+        Sets a top margin on the fade overlays to position them below the headers.
+        """
+        from ..components import update_fades
+        header_height = self.available_ing_tree.header().height()
+        overlay_widget = self.avail_top_fade.parentWidget()
+        if overlay_widget:
+            overlay_widget.layout().setContentsMargins(0, header_height, 0, 0)
+
+        header_height = self.formulation_tree.header().height()
+        overlay_widget = self.form_top_fade.parentWidget()
+        if overlay_widget:
+            overlay_widget.layout().setContentsMargins(0, header_height, 0, 0)
+
+    def _initial_fade_update(self):
+        """Force an update of the fades after the UI is shown."""
+        from ..components import update_fades
+        update_fades(self.available_ing_tree, self.avail_top_fade, self.avail_bottom_fade)
+        update_fades(self.formulation_tree, self.form_top_fade, self.form_bottom_fade)
+
+    def _update_accord_indicator(self, item):
+        """Changes the expand/collapse icon for an accord item."""
+        widget = self.sender().itemWidget(item, 0)
+        if isinstance(widget, AccordItemWidget):
+            widget.set_expanded(item.isExpanded())
+
+    def _on_selection_changed(self):
+        """Updates the visual state of all accord widgets based on tree selection."""
+        # This view doesn't have a concept of a single "selection" like the manager,
+        # but we need to update the visual state for accord widgets.
+        sender_tree = self.sender()
+        if not sender_tree: return
+
+        for i in range(sender_tree.topLevelItemCount()):
+            item = sender_tree.topLevelItem(i)
+            if item:
+                widget = sender_tree.itemWidget(item, 0)
+                if isinstance(widget, AccordItemWidget):
+                    widget.set_selected(item.isSelected())
+
+    def _handle_sort_request(self, tree_widget, column_index):
+        """
+        Handles the three-state sorting logic for tree widgets.
+        """
+        if tree_widget is self.formulation_tree and column_index == 2:  # Unit column
+            return
+
+        is_available_tree = tree_widget is self.available_ing_tree
+        current_sort_column, current_sort_order = (
+            self.available_sort_state if is_available_tree else self.formulation_sort_state
+        )
+
+        new_sort_order = None
+        if current_sort_column != column_index:
+            new_sort_column = column_index
+            new_sort_order = Qt.SortOrder.AscendingOrder
+        elif current_sort_order == Qt.SortOrder.AscendingOrder:
+            new_sort_column = column_index
+            new_sort_order = Qt.SortOrder.DescendingOrder
+        else:
+            new_sort_column = None
+            new_sort_order = None
+
+        if is_available_tree:
+            self.available_sort_state = (new_sort_column, new_sort_order)
+            self._filter_available_ingredients()
+        else:
+            self.formulation_sort_state = (new_sort_column, new_sort_order)
+            self.update_current_formula_display()
+
+        if new_sort_column is not None:
+            tree_widget.header().setSortIndicator(new_sort_column, new_sort_order)
+            tree_widget.header().setSortIndicatorShown(True)
+        else:
+            tree_widget.header().setSortIndicatorShown(False)
 
     def show_status_message(self, text, is_error=False):
         self.status_label.setText(text)
@@ -267,8 +390,10 @@ class CreateFormulationFrame(QWidget):
     def save_column_widths(self):
         """Saves the column widths for both tree views in this frame."""
         settings = QSettings()
-        settings.setValue("creator/availableHeaderState", self.available_ing_tree.header().saveState())
-        settings.setValue("creator/formulationHeaderState", self.formulation_tree.header().saveState())
+        available_state = self.available_ing_tree.header().saveState()
+        formulation_state = self.formulation_tree.header().saveState()
+        settings.setValue("creator/availableHeaderState", available_state)
+        settings.setValue("creator/formulationHeaderState", formulation_state)
 
     def load_column_widths(self):
         """Loads and applies column widths for both tree views."""
@@ -285,17 +410,25 @@ class CreateFormulationFrame(QWidget):
         count_before = len(self.formulation_entries)
         self.formulation_entries = [e for e in self.formulation_entries if e['ingredient_name'] not in names_to_remove]
         if len(self.formulation_entries) < count_before:
+            self.formulation_sort_state = (None, None)
+            self.formulation_tree.header().setSortIndicatorShown(False)
             self.update_current_formula_display()
+            self._filter_available_ingredients()
 
     def reset_formulation_creation(self):
         if self.pyramid_window: self.pyramid_window.close()
         if self.scent_profile_window: self.scent_profile_window.close()
         self.editing_formulation_obj_ref = None
         self.formulation_name_entry.clear()
+        self.ing_search_bar.clear()
         self.formulation_entries = []
         self.status_label.clear()
-        self.save_button.setText("Save Formulation")
-        self.populate_available_ingredients()
+        self.save_button.setText("Save...")
+        self.available_sort_state = (None, None)
+        self.formulation_sort_state = (None, None)
+        self.available_ing_tree.header().setSortIndicatorShown(False)
+        self.formulation_tree.header().setSortIndicatorShown(False)
+        self._filter_available_ingredients()
         self.update_current_formula_display()
 
     def setup_for_editing(self, formula_data):
@@ -303,35 +436,51 @@ class CreateFormulationFrame(QWidget):
         self.editing_formulation_obj_ref = formula_data
         self.formulation_name_entry.setText(formula_data.get('name', ''))
         self.formulation_entries = [entry.copy() for entry in formula_data.get('entries', [])]
-        self.save_button.setText("Update Formulation")
+        self.save_button.setText("Update...")
         self.update_current_formula_display()
+        self._filter_available_ingredients()
 
-    def populate_available_ingredients(self):
-        self.available_ing_tree.clear()
-        align_left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        align_center = Qt.AlignmentFlag.AlignCenter
-        align_right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    def _filter_available_ingredients(self):
+        """Filters and sorts the available ingredients list."""
+        search_term = self.ing_search_bar.text().lower()
 
-        for ing in sorted(self.data_manager.data['ingredients'], key=lambda x: x.get('name', '')):
-            def clean_val(key, default=''):
-                val = ing.get(key, default)
-                return '' if str(val).strip().lower() in ('n/a', '') else str(val)
+        all_ingredients = self.data_manager.get_all_ingredients()
+        current_formula_names = {e['ingredient_name'] for e in self.formulation_entries}
 
-            item_data = [
-                ing.get('name', ''),
-                f"{ing.get('concentration', 0.0):.2f}%",
-                ing.get('note_type', 'Other'),
-                ing.get('primary_category', 'Uncategorized'),
-                clean_val('secondary_category'),
-                f"${ing.get('cost', 0.0):.2f}"
+        ingredients_to_show = [
+            ing for ing in all_ingredients if ing['name'] not in current_formula_names
+        ]
+
+        if self.editing_formulation_obj_ref and self.editing_formulation_obj_ref.get('is_accord'):
+            accord_name_being_edited = self.editing_formulation_obj_ref.get('name')
+            ingredients_to_show = [
+                ing for ing in ingredients_to_show if ing.get('name') != accord_name_being_edited
             ]
-            item = QTreeWidgetItem(item_data)
 
-            alignments = [align_left, align_center, align_center, align_center, align_center, align_right]
-            for i, align in enumerate(alignments):
-                item.setTextAlignment(i, align)
+        if search_term:
+            ingredients_to_show = [
+                ing for ing in ingredients_to_show if
+                search_term in ing.get('name', '').lower() or
+                (ing.get('type') == 'accord' and any(
+                    search_term in entry.get('ingredient_name', '').lower() for entry in
+                    self.data_manager.get_formulation_by_name(ing.get('name', '')).get('entries', [])))
+            ]
 
-            self.available_ing_tree.addTopLevelItem(item)
+        sort_column, sort_order = self.available_sort_state
+        if sort_column is not None:
+            is_reverse = sort_order == Qt.SortOrder.DescendingOrder
+            sort_keys = ["name", "concentration", "note_type", "primary_category", "secondary_category", "cost"]
+            sort_key = sort_keys[sort_column]
+            ingredients_to_show.sort(
+                key=lambda x: x.get(sort_key, 0 if isinstance(x.get(sort_key), (int, float)) else ""),
+                reverse=is_reverse)
+
+        populate_ingredient_tree(self.available_ing_tree, ingredients_to_show, self.data_manager)
+
+        from ..components import update_fades
+        QTimer.singleShot(0, lambda: update_fades(self.available_ing_tree, self.avail_top_fade,
+                                                  self.avail_bottom_fade))
+        QTimer.singleShot(0, self._on_selection_changed)
 
     def add_ingredient_to_formula(self, ingredient_names):
         for name in ingredient_names:
@@ -339,9 +488,11 @@ class CreateFormulationFrame(QWidget):
                 self.formulation_entries.append(
                     {"ingredient_name": name, "quantity": 0.0, "unit": "gram", "highlight_color": None})
         self.update_current_formula_display()
+        self._filter_available_ingredients()
 
     def on_cell_double_click(self, item, column):
-        if column != 1: return
+        if column != 1 or (item and item.parent() is not None):
+            return
         try:
             original_value = float(item.text(1))
         except (ValueError, TypeError):
@@ -356,62 +507,106 @@ class CreateFormulationFrame(QWidget):
         spinbox.setFocus()
 
     def update_quantity_from_spinbox(self, item, spinbox):
+        item_data = item.data(0, Qt.ItemDataRole.UserRole)
+        name_to_update = item_data['name']
         for entry in self.formulation_entries:
-            if entry['ingredient_name'] == item.text(0):
+            if entry['ingredient_name'] == name_to_update:
                 entry['quantity'] = spinbox.value()
                 break
         self.formulation_tree.setItemWidget(item, 1, None)
         self.update_current_formula_display()
 
-    def show_highlight_menu(self, position):
-        menu = QMenu(self)
-        set_color = menu.addAction("Set Highlight Color")
-        clear_color = menu.addAction("Clear Highlight")
-        action = menu.exec(self.formulation_tree.mapToGlobal(position))
-        if action == set_color:
-            self.set_highlight_color()
-        elif action == clear_color:
-            self.clear_highlight()
+    def show_context_menu(self, position):
+        handle_tree_context_menu(self, self.formulation_tree, position)
 
     def set_highlight_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
             for item in self.formulation_tree.selectedItems():
+                item_data = item.data(0, Qt.ItemDataRole.UserRole)
+                name_to_update = item_data['name']
                 for entry in self.formulation_entries:
-                    if entry['ingredient_name'] == item.text(0):
+                    if entry['ingredient_name'] == name_to_update:
                         entry['highlight_color'] = color.name()
             self.update_current_formula_display()
 
     def clear_highlight(self):
         for item in self.formulation_tree.selectedItems():
+            item_data = item.data(0, Qt.ItemDataRole.UserRole)
+            name_to_update = item_data['name']
             for entry in self.formulation_entries:
-                if entry['ingredient_name'] == item.text(0):
+                if entry['ingredient_name'] == name_to_update:
                     entry['highlight_color'] = None
         self.update_current_formula_display()
 
     def update_current_formula_display(self):
+        """
+        Rebuilds the 'Current Formulation' tree, showing accords as expandable folders.
+        """
         self.formulation_tree.clear()
+
+        sort_column, sort_order = self.formulation_sort_state
+        if sort_column is not None:
+            is_reverse = sort_order == Qt.SortOrder.DescendingOrder
+            sort_keys = ["ingredient_name", "quantity", None, "percentage", "cost"]
+            sort_key = sort_keys[sort_column]
+            if sort_key:
+                self.data_manager.calculate_formulation_totals({"entries": self.formulation_entries})
+                self.formulation_entries.sort(key=lambda x: x.get(sort_key, 0), reverse=is_reverse)
+
         temp_formulation = {"entries": self.formulation_entries}
         self.data_manager.calculate_formulation_totals(temp_formulation)
 
-        align_left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        align_center = Qt.AlignmentFlag.AlignCenter
-        align_right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        alignments = {
+            1: Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            2: Qt.AlignmentFlag.AlignCenter,
+            3: Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            4: Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        }
 
-        for entry in sorted(self.formulation_entries, key=lambda x: x['ingredient_name']):
+        for entry in self.formulation_entries:
+            ing = self.data_manager.get_ingredient_by_name(entry['ingredient_name'])
+            is_accord = ing and ing.get('type') == 'accord'
+
+            parent_item = QTreeWidgetItem()
+            parent_item.setData(0, Qt.ItemDataRole.UserRole,
+                                {'name': entry['ingredient_name'], 'type': ing.get('type', 'raw') if ing else 'raw'})
+            self.formulation_tree.addTopLevelItem(parent_item)
+
+            if is_accord:
+                item_widget = AccordItemWidget(entry['ingredient_name'])
+                item_widget.set_tree_item(parent_item)
+                self.formulation_tree.setItemWidget(parent_item, 0, item_widget)
+            else:
+                parent_item.setText(0, entry['ingredient_name'])
+                parent_item.setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
             percent_display = f"{entry.get('percentage', 0.0):.2f}%"
-            item_data = [entry['ingredient_name'], f"{entry.get('quantity', 0.0):.4f}", 'g', percent_display,
-                         f"${entry.get('cost', 0.0):.2f}"]
-            item = QTreeWidgetItem(item_data)
+            parent_item.setText(1, f"{entry.get('quantity', 0.0):.4f}")
+            parent_item.setText(2, 'g')
+            parent_item.setText(3, percent_display)
+            parent_item.setText(4, f"${entry.get('cost', 0.0):.2f}")
 
-            alignments = [align_left, align_right, align_center, align_right, align_right]
-            for i, align in enumerate(alignments):
-                item.setTextAlignment(i, align)
+            for i, align in alignments.items():
+                parent_item.setTextAlignment(i, align)
 
             if color_hex := entry.get('highlight_color'):
-                for i in range(item.columnCount()):
-                    item.setBackground(i, QBrush(QColor(color_hex)))
-            self.formulation_tree.addTopLevelItem(item)
+                for i in range(parent_item.columnCount()):
+                    parent_item.setBackground(i, QBrush(QColor(color_hex)))
+
+            if is_accord:
+                accord_formula = self.data_manager.get_formulation_by_name(ing['name'])
+                if accord_formula:
+                    self.data_manager.calculate_formulation_totals(accord_formula)
+                    for accord_entry in sorted(accord_formula.get('entries', []), key=lambda x: x['ingredient_name']):
+                        child_data = [
+                            f"    - {accord_entry['ingredient_name']}", "", "",
+                            f"     {accord_entry.get('percentage', 0):.2f}%", ""
+                        ]
+                        child_item = QTreeWidgetItem(child_data)
+                        child_item.setFlags(child_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+                        child_item.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                        parent_item.addChild(child_item)
 
         totals = temp_formulation
         self.conc_grams_label.setText(f"Conc: {totals.get('calculated_concentrate_grams', 0.0):.2f}g")
@@ -421,32 +616,60 @@ class CreateFormulationFrame(QWidget):
         self.total_cost_label.setText(f"Total Cost: ${totals.get('calculated_total_cost', 0.0):.2f}")
 
         self.formulation_updated.emit(temp_formulation)
+        from ..components import update_fades
+        QTimer.singleShot(0, lambda: update_fades(self.formulation_tree, self.form_top_fade,
+                                                  self.form_bottom_fade))
+        QTimer.singleShot(0, self._on_selection_changed)
 
     def save_formulation(self):
+        # 1. Validation
         name = self.formulation_name_entry.text().strip()
         if not name or not self.formulation_entries:
-            CustomMessageBox.warning(self, "Validation Error",
-                                     "Formulation must have a name and at least one ingredient.")
+            CustomMessageBox.warning(self, "Validation Error", "A name and at least one ingredient are required.")
             return
 
         is_editing = self.editing_formulation_obj_ref is not None
-        if any(f['name'].lower() == name.lower() and (not is_editing or f is not self.editing_formulation_obj_ref) for f
-               in self.data_manager.data['formulations']):
-            CustomMessageBox.warning(self, "Validation Error", f"Formulation '{name}' already exists.")
+        original_name = self.editing_formulation_obj_ref.get('name') if is_editing else None
+
+        if name.lower() != (original_name.lower() if original_name else None):
+            if self.data_manager.get_formulation_by_name(name) or self.data_manager.get_ingredient_by_name(name):
+                CustomMessageBox.warning(self, "Validation Error", f"An item named '{name}' already exists.")
+                return
+
+        # 2. Get User Intent
+        was_accord = is_editing and self.editing_formulation_obj_ref.get('is_accord', False)
+        dialog = SaveAsDialog(is_editing_accord=was_accord, parent=self)
+        if not dialog.exec():
             return
 
-        if is_editing:
-            self.editing_formulation_obj_ref['name'] = name
-            self.editing_formulation_obj_ref['entries'] = self.formulation_entries
-            self.data_manager.calculate_formulation_totals(self.editing_formulation_obj_ref)
-            self.show_status_message(f"Formulation '{name}' updated successfully!")
-        else:
-            new_formulation = {"name": name, "unit": "gram", "entries": self.formulation_entries}
-            self.data_manager.calculate_formulation_totals(new_formulation)
-            self.data_manager.data['formulations'].append(new_formulation)
-            self.show_status_message(f"Formulation '{name}' saved successfully!")
+        save_details = dialog.get_values()
+        is_now_accord = save_details['type'] == 'accord'
 
-        self.data_manager.save_data()
+        # If the name changed while editing, we need to handle the original
+        if is_editing and name.lower() != original_name.lower():
+            self.data_manager.delete_formulation(original_name)
+
+        # If it was an accord but now isn't (or name changed), remove old accord-ingredient
+        if was_accord and (not is_now_accord or name.lower() != original_name.lower()):
+            self.data_manager.delete_ingredient(original_name)
+
+        formulation_obj = {
+            "name": name,
+            "entries": self.formulation_entries,
+            "is_accord": is_now_accord,
+            "unit": "gram"
+        }
+        self.data_manager.save_formulation(formulation_obj)
+
+        if is_now_accord:
+            self.data_manager.create_accord_as_ingredient(
+                formulation_obj,
+                save_details['note_type'],
+                save_details['primary_category'],
+                save_details['secondary_category']
+            )
+
+        self.show_status_message(f"'{name}' saved successfully as a {save_details['type']}!")
         self.reset_formulation_creation()
 
     def show_pyramid_view(self):
@@ -461,8 +684,8 @@ class CreateFormulationFrame(QWidget):
     def show_scent_profile_view(self):
         if not self.scent_profile_window:
             self.scent_profile_window = ScentProfileWindow(data_manager=self.data_manager, parent=self)
-            self.formulation_updated.connect(self.scent_profile_window.update_data)
             self.scent_profile_window.closing.connect(lambda: setattr(self, 'scent_profile_window', None))
+            self.formulation_updated.connect(self.scent_profile_window.update_data)
         self.scent_profile_window.update_data({"entries": self.formulation_entries})
         self.scent_profile_window.show_animated()
         self.scent_profile_window.activateWindow()

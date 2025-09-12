@@ -7,10 +7,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 
 
-# --- Local Imports ---
-# REMOVED: from ..data_manager import data_manager
-
-
 class SettingsMenuFrame(QWidget):
     """
     Serves as the main menu for the settings section, providing navigation
@@ -21,12 +17,9 @@ class SettingsMenuFrame(QWidget):
     show_data_management_signal = pyqtSignal()
     show_scent_color_settings_signal = pyqtSignal()
 
-    # UPDATED: The constructor now accepts the data_manager instance.
     def __init__(self, data_manager, parent=None):
         super().__init__(parent)
         self.setObjectName("SettingsMenuFrame")
-
-        # RATIONALE: The passed-in DataManager is stored as an instance variable.
         self.data_manager = data_manager
 
         main_layout = QVBoxLayout(self)
@@ -110,8 +103,7 @@ class SettingsMenuFrame(QWidget):
         self.grid_radio.blockSignals(True)
         self.list_radio.blockSignals(True)
 
-        # UPDATED: Uses the instance variable self.data_manager
-        current_view_mode = self.data_manager.data['settings'].get('default_formulation_view', 'grid')
+        current_view_mode = self.data_manager.get_setting('default_formulation_view') or 'grid'
         if current_view_mode == 'grid':
             self.grid_radio.setChecked(True)
         else:
@@ -124,7 +116,5 @@ class SettingsMenuFrame(QWidget):
         """ Save the new default view mode setting via the data_manager. """
         if self.view_mode_group.checkedButton():
             new_mode = 'grid' if self.grid_radio.isChecked() else 'list'
-            # UPDATED: Uses the instance variable self.data_manager
-            if self.data_manager.data['settings'].get('default_formulation_view') != new_mode:
-                self.data_manager.data['settings']['default_formulation_view'] = new_mode
-                self.data_manager.save_data()
+            if self.data_manager.get_setting('default_formulation_view') != new_mode:
+                self.data_manager.save_setting('default_formulation_view', new_mode)

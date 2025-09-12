@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt
 # These can now be imported successfully because the path was set in Block 2.
 from Formul8.utils import resource_path
 from Formul8.main_window import MainWindow
-from Formul8.ui_components import AnimatedSplashScreen
+from Formul8.components import AnimatedSplashScreen
 from Formul8.constants import APP_VERSION
 
 
@@ -89,7 +89,6 @@ def main():
     main_window = MainWindow()
     main_window.setWindowIcon(app_icon)
 
-    # --- NEW: Install the main window as a global event filter ---
     app.installEventFilter(main_window)
 
     start_time = time.time()
