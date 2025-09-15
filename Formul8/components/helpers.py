@@ -1,7 +1,7 @@
 # formul8/components/helpers.py
 # Contains UI helper functions that are not widgets themselves.
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedLayout, QTreeWidgetItem
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QFontMetrics, QPalette, QIcon
 from PyQt6.QtCore import Qt, QByteArray
 from PyQt6.QtSvg import QSvgRenderer
@@ -20,6 +20,59 @@ def create_svg_icon(svg_string, color):
     renderer.render(painter)
     painter.end()
     return QIcon(pixmap)
+
+
+def configure_accord_item_display(parent_item, item_data, data_manager, tree_widget, child_percentage_column,
+                                  child_name_prefix="    - "):
+    """
+    A centralized function to configure the visual representation of an accord item in a tree.
+    It sets the custom AccordItemWidget and populates its children with consistent styling.
+
+    Args:
+        parent_item (QTreeWidgetItem): The item to be configured.
+        item_data (dict): The data dictionary for the ingredient/accord.
+        data_manager (DataManager): The application's data manager instance.
+        tree_widget (QTreeWidget): The tree widget this item belongs to.
+        child_percentage_column (int): The column index where the child percentage should be displayed.
+        child_name_prefix (str): The prefix for the child ingredient names.
+    """
+    # --- FIX: Moved import here to break circular dependency ---
+    from .widgets import AccordItemWidget
+
+    item_type = item_data.get('type', 'raw')
+
+    # Only proceed if it's an accord
+    if item_type not in ['formulation_accord', 'premade_accord']:
+        return
+
+    # Set the custom widget for the parent accord item
+    widget = AccordItemWidget(item_data['name'])
+    widget.set_tree_item(parent_item)
+    tree_widget.setItemWidget(parent_item, 0, widget)
+
+    if item_type == 'formulation_accord':
+        accord_formula = data_manager.get_formulation_by_name(item_data['name'])
+        if accord_formula:
+            data_manager.calculate_formulation_totals(accord_formula)
+            for entry in sorted(accord_formula.get('entries', []), key=lambda x: x['ingredient_name']):
+                # Create the list for the child's row data, with empty strings for all columns
+                child_data = [""] * tree_widget.columnCount()
+                child_data[0] = f"{child_name_prefix}{entry['ingredient_name']}"
+
+                # Add the specially formatted and aligned percentage
+                percent_text = f"{' ' * 8}{entry.get('percentage', 0):.2f}%"
+                child_data[child_percentage_column] = percent_text
+
+                child_item = QTreeWidgetItem(child_data)
+                child_item.setFlags(child_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+                child_item.setTextAlignment(child_percentage_column,
+                                            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+                parent_item.addChild(child_item)
+
+    elif item_type == 'premade_accord':
+        child_item = QTreeWidgetItem([f"{child_name_prefix}Contents unknown"])
+        child_item.setFlags(Qt.ItemFlag.NoItemFlags)
+        parent_item.addChild(child_item)
 
 
 def _update_fade_visibility(tree, top_fade, bottom_fade):

@@ -5,10 +5,7 @@ import sqlite3
 import json
 import os
 import shutil
-from .constants import (
-    DEFAULT_SCENT_CATEGORIES, DEFAULT_SUPPLIERS, DEFAULT_BRANDS,
-    DEFAULT_DILUENTS, DEFAULT_SCENT_PROFILE_COLORS
-)
+from datetime import datetime, timedelta
 
 
 def get_db_path(filename="formul8.db"):
@@ -49,7 +46,8 @@ def create_tables(conn):
                 note_type TEXT,
                 primary_category TEXT,
                 secondary_category TEXT,
-                notes TEXT
+                notes TEXT,
+                date_added TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime'))
             );
         """)
 
@@ -87,6 +85,50 @@ def create_tables(conn):
         print(f"Table Creation Error: {e}")
 
 
+def _run_migrations(conn):
+    """Checks for and applies necessary schema and data changes to an existing database."""
+    try:
+        cursor = conn.cursor()
+        # --- Schema Migration: Add 'date_added' column (Migration #1) ---
+        cursor.execute("PRAGMA table_info(ingredients)")
+        columns = [row['name'] for row in cursor.fetchall()]
+        if 'date_added' not in columns:
+            print("Running schema migration: Adding 'date_added' column to ingredients...")
+            cursor.execute("ALTER TABLE ingredients ADD COLUMN date_added TEXT NOT NULL DEFAULT '1970-01-01T00:00:00'")
+            conn.commit()
+            print("Schema migration successful.")
+
+        # --- Data Migration: Flip existing ingredient order (Migration #2) ---
+        cursor.execute("SELECT value FROM settings WHERE key = 'v1_order_flip_migration_complete'")
+        migration_flag = cursor.fetchone()
+        if not migration_flag:
+            print("Running one-time data migration: Reversing order of existing ingredients...")
+            try:
+                # 1. Fetch all ingredients, sorted alphabetically to get a stable original order
+                cursor.execute("SELECT name FROM ingredients ORDER BY name ASC")
+                all_ingredient_names = [row['name'] for row in cursor.fetchall()]
+
+                # 2. Iterate backwards and assign new, sequential timestamps
+                current_time = datetime.now()
+                for i, name in enumerate(reversed(all_ingredient_names)):
+                    # Decrement the timestamp for each item to create a reverse chronological order
+                    new_timestamp = (current_time - timedelta(seconds=i)).isoformat()
+                    cursor.execute("UPDATE ingredients SET date_added = ? WHERE name = ?", (new_timestamp, name))
+
+                # 3. Set the flag in the settings table so this doesn't run again
+                cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                               ('v1_order_flip_migration_complete', 'true'))
+
+                conn.commit()
+                print("Ingredient order reversal successful.")
+            except sqlite3.Error as e:
+                print(f"Error during ingredient order reversal migration: {e}")
+                conn.rollback()  # Rollback on error
+
+    except sqlite3.Error as e:
+        print(f"Database migration error: {e}")
+
+
 def migrate_from_json(conn, json_path):
     """One-time migration from the old JSON file to the new SQLite DB."""
     print(f"Migrating data from {json_path}...")
@@ -98,17 +140,19 @@ def migrate_from_json(conn, json_path):
         return
 
     cursor = conn.cursor()
+    now_iso = datetime.now().isoformat()
 
     # Migrate ingredients
     for ing in data.get('ingredients', []):
         ing.setdefault('type', 'raw' if not ing.get('is_accord') else 'accord')
         cursor.execute("""
-            INSERT OR REPLACE INTO ingredients (name, type, concentration, diluent, brand, chemical_name, vendor, cost, note_type, primary_category, secondary_category, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO ingredients (name, type, concentration, diluent, brand, chemical_name, vendor, cost, note_type, primary_category, secondary_category, notes, date_added)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ing.get('name'), ing.get('type'), ing.get('concentration'), ing.get('diluent'), ing.get('brand'),
             ing.get('chemical_name'), ing.get('vendor'), ing.get('cost'), ing.get('note_type'),
-            ing.get('primary_category'), ing.get('secondary_category'), ing.get('notes')
+            ing.get('primary_category'), ing.get('secondary_category'), ing.get('notes'),
+            now_iso
         ))
 
     # Migrate formulations and their entries
@@ -143,17 +187,19 @@ def migrate_from_json(conn, json_path):
 def initialize_database():
     """Main function to set up the database, creating it and migrating if needed."""
     db_file = get_db_path()
-    json_file = get_db_path("perfume_data.json")  # Old JSON file path
+    json_file = get_db_path("perfume_data.json")
 
-    # If the database doesn't exist, we must create it.
-    if not os.path.exists(db_file):
-        print(f"Database not found at {db_file}. Creating...")
-        conn = create_connection(db_file)
-        if conn is not None:
+    db_exists = os.path.exists(db_file)
+
+    conn = create_connection(db_file)
+    if conn is not None:
+        if not db_exists:
+            print(f"Database not found at {db_file}. Creating...")
             create_tables(conn)
-            # If the old JSON file exists, migrate from it.
             if os.path.exists(json_file):
                 migrate_from_json(conn, json_file)
-            conn.close()
+        else:
+            # If DB exists, run migrations to check for schema updates
+            _run_migrations(conn)
 
-    return create_connection(db_file)
+    return conn

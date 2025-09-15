@@ -3,11 +3,11 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget,
-    QStyle, QGraphicsOpacityEffect, QTreeWidgetItem
+    QStyle, QGraphicsOpacityEffect, QTreeWidgetItem, QHeaderView
 )
 from PyQt6.QtGui import (
     QMouseEvent, QPaintEvent, QColor, QIcon, QPixmap, QPainter, QFont,
-    QGuiApplication, QPalette, QCursor
+    QFontMetrics, QPalette, QCursor, QGuiApplication
 )
 from PyQt6.QtCore import (
     Qt, QTimer, pyqtSignal, QPoint, QPropertyAnimation, QEasingCurve,
@@ -18,8 +18,37 @@ from urllib.parse import quote
 from ..constants import ACCORD_SYMBOL
 from .helpers import create_svg_icon
 
-# --- MODIFIED: Removed ARROW_RIGHT_SVG and ARROW_DOWN_SVG as they are now only used in AccordItemWidget ---
-# They are now local to that class for better encapsulation.
+
+class ClickableHeader(QHeaderView):
+    """
+    A custom QHeaderView that emits a reliable click signal for a column,
+    bypassing conflicts with the parent widget's drag-and-drop handling.
+    """
+    customSectionClicked = pyqtSignal(int)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setSectionsClickable(True)
+        # Let the header manage its own cursor to show resize handles correctly
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        """
+        Handles mouse press events to differentiate between sorting clicks
+        and resize drags.
+        """
+        # If the cursor is the resize handle, let the default behavior take over
+        # and do not emit our custom click signal.
+        if self.cursor().shape() == Qt.CursorShape.SplitHCursor:
+            super().mousePressEvent(event)
+            return
+
+        # Otherwise, it's a sort click.
+        logical_index = self.logicalIndexAt(event.position().toPoint())
+        if logical_index != -1:
+            self.customSectionClicked.emit(logical_index)
+
+        super().mousePressEvent(event)
 
 
 class HoverIconLink(QLabel):
@@ -133,32 +162,46 @@ class AccordItemWidget(QWidget):
         self.arrow_icon_expanded_hover = create_svg_icon(self.ARROW_DOWN_SVG, self.hover_color)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 4, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(2, 0, 4, 0)
+        layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         self.arrow_label = HoverLabel()
         self.arrow_label.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.arrow_label.setFixedSize(22, 22)
+        self.arrow_label.setFixedSize(14, 22)
         self.arrow_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.arrow_label.hover_enter.connect(self._handle_hover_enter)
         self.arrow_label.hover_leave.connect(self._handle_hover_leave)
         self.arrow_label.clicked.connect(self._on_arrow_clicked)
         layout.addWidget(self.arrow_label)
 
+        self.name_label = QLabel(name)
+        self.name_label.setStyleSheet("color: #ffffff; font-size: 10pt; margin-left: 2px; margin-right: 6px;")
+
         self.symbol_label = QLabel(ACCORD_SYMBOL)
         self.symbol_label.setStyleSheet("color: #ffffff; font-size: 10pt;")
-        layout.addWidget(self.symbol_label)
 
-        self.name_label = QLabel(name)
-        self.name_label.setStyleSheet("color: #ffffff; font-size: 10pt;")
         layout.addWidget(self.name_label)
+        layout.addWidget(self.symbol_label)
+        layout.addStretch()  # Ensure it doesn't fill the whole row
 
         self._update_arrow_icon()
 
     def set_tree_item(self, item: QTreeWidgetItem):
         """Stores a reference to the tree item this widget belongs to."""
         self.tree_item = item
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        """
+        Accepts the double-click event ONLY if it's over the expand/collapse arrow.
+        This prevents accidentally editing while double-clicking the arrow, but allows
+        double-clicking the name to correctly trigger the edit action.
+        """
+        if self.arrow_label.geometry().contains(event.position().toPoint()):
+            event.accept()
+            return
+
+        super().mouseDoubleClickEvent(event)
 
     def _on_arrow_clicked(self):
         """Toggles the expanded state of the parent tree item when the arrow is clicked."""

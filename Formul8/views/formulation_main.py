@@ -1,7 +1,8 @@
 # formul8/views/formulation_main.py
 # A container frame that holds the 'Create' and 'View' formulation frames in a tabbed layout.
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabBar, QFrame, QPushButton
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabBar, QFrame, QPushButton, QStackedLayout, \
+    QSizePolicy
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 
 # --- Local Imports ---
@@ -26,17 +27,34 @@ class FormulationMainFrame(QWidget):
         layout.setSpacing(0)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        top_bar = QHBoxLayout()
+        # --- Re-architected top bar for perfect title centering ---
+        top_bar_widget = QWidget()
+        # --- FIX: Constrain the top bar's height to prevent extra space ---
+        top_bar_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        top_bar_layout = QStackedLayout(top_bar_widget)
+        top_bar_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
+
+        # Layer 0: Button
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
         back_button = QPushButton("<- Back to Main Menu")
         back_button.clicked.connect(self.back_signal.emit)
-        top_bar.addWidget(back_button, alignment=Qt.AlignmentFlag.AlignLeft)
-        top_bar.addStretch()
-        layout.addLayout(top_bar)
+        button_layout.addWidget(back_button)
+        button_layout.addStretch()
 
+        # Layer 1: Title
         header = QLabel("Formulation Manager")
         header.setObjectName("HeaderLabel")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(header)
+        # Make title transparent to clicks so the back button works if under it
+        header.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        # Add layers to stack (last widget added is on top)
+        top_bar_layout.addWidget(button_container)
+        top_bar_layout.addWidget(header)
+
+        layout.addWidget(top_bar_widget)
 
         self.tab_bar = QTabBar()
         self.tab_bar.setExpanding(False)

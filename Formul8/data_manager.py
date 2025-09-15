@@ -11,10 +11,8 @@ from .constants import (
     DEFAULT_SCENT_CATEGORIES, DEFAULT_SUPPLIERS, DEFAULT_BRANDS,
     DEFAULT_DILUENTS, DEFAULT_SCENT_PROFILE_COLORS
 )
-
-# --- PDF Export Library ---
-from fpdf import FPDF
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
+# --- RATIONALE: We need the ReportPDF utility for PDF exports ---
+from .utils import ReportPDF, convert_unit
 
 
 class DataManager:
@@ -39,10 +37,10 @@ class DataManager:
                 self.save_setting(key, value)
 
     def get_all_ingredients(self):
-        """Retrieves all ingredients from the database."""
+        """Retrieves all ingredients from the database, sorted by most recently added."""
         try:
             cur = self.conn.cursor()
-            cur.execute("SELECT * FROM ingredients")
+            cur.execute("SELECT * FROM ingredients ORDER BY date_added DESC")
             return [dict(row) for row in cur.fetchall()]
         except sqlite3.Error as e:
             print(f"Database error getting ingredients: {e}")
@@ -113,30 +111,35 @@ class DataManager:
         try:
             cur = self.conn.cursor()
             if is_update:
+                # When updating, we don't change the date_added
                 cur.execute("""
                     UPDATE ingredients SET
                     name=?, type=?, concentration=?, diluent=?, brand=?, chemical_name=?, vendor=?, cost=?,
                     note_type=?, primary_category=?, secondary_category=?, notes=?
                     WHERE name=?
                 """, (
-                    ingredient_data.get('name'), ingredient_data.get('type', 'raw'),
-                    ingredient_data.get('concentration'),
-                    ingredient_data.get('diluent'), ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
-                    ingredient_data.get('vendor'), ingredient_data.get('cost'), ingredient_data.get('note_type'),
-                    ingredient_data.get('primary_category'), ingredient_data.get('secondary_category'),
-                    ingredient_data.get('notes'), original_name
+                    ingredient_data.get('name'), ingredient_data.get('type'),
+                    ingredient_data.get('concentration'), ingredient_data.get('diluent'),
+                    ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
+                    ingredient_data.get('vendor'), ingredient_data.get('cost'),
+                    ingredient_data.get('note_type'), ingredient_data.get('primary_category'),
+                    ingredient_data.get('secondary_category'), ingredient_data.get('notes'),
+                    original_name
                 ))
             else:
+                # When inserting, we add the current timestamp
+                now_iso = datetime.now().isoformat()
                 cur.execute("""
-                    INSERT INTO ingredients (name, type, concentration, diluent, brand, chemical_name, vendor, cost, note_type, primary_category, secondary_category, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO ingredients (name, type, concentration, diluent, brand, chemical_name, vendor, cost, note_type, primary_category, secondary_category, notes, date_added)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    ingredient_data.get('name'), ingredient_data.get('type', 'raw'),
-                    ingredient_data.get('concentration'),
-                    ingredient_data.get('diluent'), ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
-                    ingredient_data.get('vendor'), ingredient_data.get('cost'), ingredient_data.get('note_type'),
-                    ingredient_data.get('primary_category'), ingredient_data.get('secondary_category'),
-                    ingredient_data.get('notes')
+                    ingredient_data.get('name'), ingredient_data.get('type'),
+                    ingredient_data.get('concentration'), ingredient_data.get('diluent'),
+                    ingredient_data.get('brand'), ingredient_data.get('chemical_name'),
+                    ingredient_data.get('vendor'), ingredient_data.get('cost'),
+                    ingredient_data.get('note_type'), ingredient_data.get('primary_category'),
+                    ingredient_data.get('secondary_category'), ingredient_data.get('notes'),
+                    now_iso
                 ))
             self.conn.commit()
             return True
@@ -149,11 +152,9 @@ class DataManager:
         name = formula_data['name']
         try:
             cur = self.conn.cursor()
-            # Use INSERT OR REPLACE for simplicity, assuming name is the primary key and unique.
             cur.execute("INSERT OR REPLACE INTO formulations (name, unit, is_accord) VALUES (?, ?, ?)",
                         (name, formula_data.get('unit'), formula_data.get('is_accord', False)))
 
-            # Delete old entries before inserting new ones to handle updates.
             cur.execute("DELETE FROM formulation_entries WHERE formulation_name=?", (name,))
 
             for entry in formula_data.get('entries', []):
@@ -192,7 +193,6 @@ class DataManager:
                 self.delete_ingredient(name)
 
             cur.execute("DELETE FROM formulations WHERE name=?", (name,))
-            # Entries are deleted automatically due to ON DELETE CASCADE
             self.conn.commit()
             return cur.rowcount > 0
         except sqlite3.Error as e:
@@ -200,17 +200,24 @@ class DataManager:
             return False
 
     def create_accord_as_ingredient(self, formulation_obj, note_type, primary_category, secondary_category):
-        """Creates or updates an ingredient entry for a given accord formulation."""
+        """
+        Creates or updates an ingredient entry for a given accord formulation.
+        """
         self.calculate_formulation_totals(formulation_obj)
         total_cost = formulation_obj.get('calculated_total_cost', 0.0)
         total_grams = formulation_obj.get('calculated_total_grams', 0.0)
         cost_per_gram = (total_cost / total_grams) if total_grams > 0 else 0
 
         accord_ingredient_data = {
-            "name": formulation_obj['name'], "type": "accord", "concentration": 100.0,
-            "cost": cost_per_gram, "note_type": note_type, "primary_category": primary_category,
-            "secondary_category": secondary_category, "diluent": "", "brand": "",
-            "chemical_name": "", "vendor": "", "notes": "This is a user-created accord."
+            "name": formulation_obj['name'],
+            "type": "formulation_accord",
+            "concentration": 100.0,
+            "cost": cost_per_gram,
+            "note_type": note_type,
+            "primary_category": primary_category,
+            "secondary_category": secondary_category,
+            "diluent": "", "brand": "", "chemical_name": "", "vendor": "",
+            "notes": "This is a user-created accord."
         }
         self.save_ingredient(accord_ingredient_data)
 
@@ -222,11 +229,12 @@ class DataManager:
             if not ing:
                 entry['cost'] = 0.0
                 continue
-            if ing.get('type') == 'accord':
+
+            if ing.get('type', 'raw') in ['formulation_accord', 'premade_accord']:
                 entry['cost'] = quantity * ing.get('cost', 0.0)
                 total_cost += entry['cost']
                 concentrate_grams += quantity
-            else:
+            else:  # It's a raw material
                 eff_cost = ing.get('cost', 0.0)
                 conc = ing.get('concentration', 100.0)
                 if conc < 100.0:
@@ -291,6 +299,60 @@ class DataManager:
         self.save_formulation(new_formula)
         return new_formula
 
+    def tweak_accord_ingredient(self, accord_name, ingredient_name, new_percentage):
+        """
+        Adjusts an ingredient's percentage in an accord and proportionally scales the others.
+        """
+        accord = self.get_formulation_by_name(accord_name)
+        if not accord or not accord['is_accord']:
+            return False
+
+        self.calculate_formulation_totals(accord)
+
+        target_entry = None
+        other_entries = []
+        for e in accord['entries']:
+            if e['ingredient_name'].lower() == ingredient_name.lower():
+                target_entry = e
+            else:
+                other_entries.append(e)
+
+        if not target_entry or new_percentage < 0 or new_percentage > 100:
+            return False
+
+        other_total_percent = sum(e.get('percentage', 0.0) for e in other_entries)
+        if other_total_percent <= 0 and len(other_entries) > 0:
+            remaining_percent = 100.0 - new_percentage
+            percent_per_other = remaining_percent / len(other_entries)
+            for entry in other_entries:
+                entry['percentage'] = percent_per_other
+        elif other_total_percent > 0:
+            remaining_percent = 100.0 - new_percentage
+            scale_factor = remaining_percent / other_total_percent
+            for entry in other_entries:
+                entry['percentage'] *= scale_factor
+
+        target_entry['percentage'] = new_percentage
+
+        original_concentrate_weight = accord.get('calculated_concentrate_grams', 0.0)
+        if original_concentrate_weight <= 0:
+            original_concentrate_weight = 100.0
+
+        for entry in accord['entries']:
+            entry['quantity'] = (entry.get('percentage', 0.0) / 100.0) * original_concentrate_weight
+
+        self.save_formulation(accord)
+
+        accord_ing = self.get_ingredient_by_name(accord_name)
+        if accord_ing:
+            self.create_accord_as_ingredient(
+                accord,
+                accord_ing.get('note_type'),
+                accord_ing.get('primary_category'),
+                accord_ing.get('secondary_category')
+            )
+        return True
+
     def get_setting(self, key):
         try:
             cur = self.conn.cursor()
@@ -323,64 +385,196 @@ class DataManager:
         self.save_setting(list_key, current_list)
         return True
 
-    def tweak_accord_ingredient(self, accord_name, ingredient_name, new_percentage):
-        """
-        Adjusts an ingredient's percentage in an accord and proportionally scales the others.
-        """
-        accord = self.get_formulation_by_name(accord_name)
-        if not accord or not accord['is_accord']:
-            return False
+    # --- EXPORT FUNCTIONALITY ---
 
-        # First, ensure percentages are up to date
-        self.calculate_formulation_totals(accord)
+    def export_ingredients_to_txt(self, path):
+        """Exports the entire ingredient library to a formatted text file."""
+        try:
+            ingredients = sorted(self.get_all_ingredients(), key=lambda i: i['name'].lower())
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(f"Formul8 Ingredient Library Export\n")
+                f.write(f"Exported on: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                f.write("=" * 80 + "\n\n")
 
-        # Find the target entry and other entries
-        target_entry = None
-        other_entries = []
-        for e in accord['entries']:
-            if e['ingredient_name'].lower() == ingredient_name.lower():
-                target_entry = e
-            else:
-                other_entries.append(e)
+                # RATIONALE: Using f-string padding creates clean, aligned columns for maximum readability.
+                f.write(f"{'Name':<35} {'Type':<20} {'Cost/g':>10} {'Note':<10}\n")
+                f.write(f"{'-' * 35} {'-' * 20} {'-' * 10} {'-' * 10}\n")
 
-        if not target_entry or new_percentage < 0 or new_percentage > 100:
-            return False
+                for ing in ingredients:
+                    name = ing.get('name', 'N/A')
+                    ing_type = ing.get('type', 'raw').replace('_', ' ').title()
+                    cost = f"${ing.get('cost', 0.0):.2f}"
+                    note = ing.get('note_type', 'N/A')
+                    f.write(f"{name:<35} {ing_type:<20} {cost:>10} {note:<10}\n")
 
-        # Calculate the total percentage of the other items
-        other_total_percent = sum(e.get('percentage', 0.0) for e in other_entries)
-        if other_total_percent <= 0:
-            # If there are no other ingredients to scale, we can't do a proportional tweak.
-            return False
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
-        # Calculate the new total and the scaling factor for other ingredients
-        remaining_percent = 100.0 - new_percentage
-        scale_factor = remaining_percent / other_total_percent
+    def export_formula_to_txt(self, formula, path):
+        """Exports a single formulation to a formatted text file."""
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(f"Formulation: {formula.get('name', 'Untitled')}\n")
+                f.write(f"Exported on: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                f.write("=" * 80 + "\n\n")
 
-        # Update quantities: new quantity = (new percentage / 100) * total_concentrate_weight
-        # To do this, we first need the original total concentrate weight.
-        original_concentrate_weight = accord.get('calculated_concentrate_grams', 0.0)
-        if original_concentrate_weight <= 0:
-            return False  # Cannot scale a zero-quantity formula
+                f.write("[Ingredients]\n")
+                f.write(f"{'Name':<35} {'Quantity (g)':>15} {'% in Conc.':>15} {'Cost':>12}\n")
+                f.write(f"{'-' * 35} {'-' * 15} {'-' * 15} {'-' * 12}\n")
 
-        # Update the target ingredient's quantity
-        target_entry['quantity'] = (new_percentage / 100.0) * original_concentrate_weight
+                # RATIONALE: We must recalculate totals here to ensure the export reflects the exact state.
+                self.calculate_formulation_totals(formula)
+                for entry in sorted(formula.get('entries', []), key=lambda x: x['ingredient_name']):
+                    name = entry.get('ingredient_name', 'N/A')
+                    qty = f"{entry.get('quantity', 0.0):.4f}"
+                    percent = f"{entry.get('percentage', 0.0):.2f}%"
+                    cost = f"${entry.get('cost', 0.0):.2f}"
+                    f.write(f"{name:<35} {qty:>15} {percent:>15} {cost:>12}\n")
 
-        # Update all other ingredients' quantities
-        for entry in other_entries:
-            original_percent = entry.get('percentage', 0.0)
-            scaled_percent = original_percent * scale_factor
-            entry['quantity'] = (scaled_percent / 100.0) * original_concentrate_weight
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("[Totals]\n")
+                f.write(f"{'Concentrate:':<25} {formula.get('calculated_concentrate_grams', 0.0):.2f}g\n")
+                f.write(f"{'Solvent:':<25} {formula.get('calculated_solvent_grams', 0.0):.2f}g\n")
+                f.write(f"{'Total Weight:':<25} {formula.get('calculated_total_grams', 0.0):.2f}g\n")
+                f.write(f"{'Concentrate Strength:':<25} {formula.get('calculated_concentrate_strength', 0.0):.2f}%\n")
+                f.write(f"{'Total Cost:':<25} ${formula.get('calculated_total_cost', 0.0):.2f}\n")
 
-        # Save the updated formulation
-        self.save_formulation(accord)
+            return True, None
+        except Exception as e:
+            return False, str(e)
 
-        # Update the accord's "ingredient" representation with the new cost
-        accord_ing = self.get_ingredient_by_name(accord_name)
-        if accord_ing:
-            self.create_accord_as_ingredient(
-                accord,
-                accord_ing.get('note_type'),
-                accord_ing.get('primary_category'),
-                accord_ing.get('secondary_category')
-            )
-        return True
+    def export_ingredients_to_pdf(self, path):
+        """Exports the entire ingredient library to a PDF file."""
+        try:
+            if ReportPDF is None:
+                return False, "PDF export library (fpdf2) is not installed."
+
+            pdf = ReportPDF()
+            pdf.set_report_title("Ingredient Library")
+            pdf.add_page()
+            pdf.set_font("helvetica", size=10)
+
+            pdf.set_font("helvetica", "B", 10)
+            pdf.set_fill_color(240, 240, 240)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(80, 8, "Name", border=1, fill=True, align='C')
+            pdf.cell(40, 8, "Type", border=1, fill=True, align='C')
+            pdf.cell(25, 8, "Cost/g", border=1, fill=True, align='C')
+            pdf.cell(45, 8, "Note / Category", border=1, fill=True, align='C')
+            pdf.ln()
+
+            pdf.set_font("helvetica", size=9)
+            pdf.set_text_color(0, 0, 0)
+            ingredients = sorted(self.get_all_ingredients(), key=lambda i: i['name'].lower())
+
+            for ing in ingredients:
+                if pdf.get_y() > 250:
+                    pdf.add_page()
+                    pdf.set_font("helvetica", "B", 10)
+                    pdf.cell(80, 8, "Name", border=1, fill=True, align='C')
+                    pdf.cell(40, 8, "Type", border=1, fill=True, align='C')
+                    pdf.cell(25, 8, "Cost/g", border=1, fill=True, align='C')
+                    pdf.cell(45, 8, "Note / Category", border=1, fill=True, align='C')
+                    pdf.ln()
+                    pdf.set_font("helvetica", size=9)
+
+                note_cat = f"{ing.get('note_type', '')} / {ing.get('primary_category', '')}"
+
+                # --- FIX: Robust row drawing logic ---
+                y_before = pdf.get_y()
+                pdf.multi_cell(80, 6, ing.get('name', ''), border='L', align='L')
+                y_after_multi_cell = pdf.get_y()
+
+                pdf.set_y(y_before)  # Return to the original Y position
+                pdf.set_x(pdf.l_margin + 80)  # Explicitly set X for the next column
+
+                # Draw the rest of the cells using the calculated height of the multi_cell
+                cell_height = y_after_multi_cell - y_before
+                pdf.cell(40, cell_height, ing.get('type', 'raw').replace('_', ' ').title(), border='L', align='C')
+                pdf.cell(25, cell_height, f"${ing.get('cost', 0.0):.2f}", border='L', align='R')
+                pdf.multi_cell(45, 6, note_cat, border='LR', align='C', new_x="LMARGIN", new_y="NEXT")
+
+            pdf.output(path)
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    def export_formula_to_pdf(self, formula, path):
+        """Exports a single formulation to a PDF file."""
+        try:
+            if ReportPDF is None:
+                return False, "PDF export library (fpdf2) is not installed."
+
+            pdf = ReportPDF()
+            pdf.set_report_title(f"Formulation: {formula.get('name', 'Untitled')}")
+            pdf.add_page()
+
+            pdf.set_font("helvetica", "B", 12)
+            pdf.cell(0, 10, "Summary", new_x="LMARGIN", new_y="NEXT")
+            self.calculate_formulation_totals(formula)
+            summary_data = {
+                "Concentrate Weight:": f"{formula.get('calculated_concentrate_grams', 0.0):.2f}g",
+                "Solvent Weight:": f"{formula.get('calculated_solvent_grams', 0.0):.2f}g",
+                "Total Weight:": f"{formula.get('calculated_total_grams', 0.0):.2f}g",
+                "Concentrate Strength:": f"{formula.get('calculated_concentrate_strength', 0.0):.2f}%",
+                "Total Cost:": f"${formula.get('calculated_total_cost', 0.0):.2f}"
+            }
+            pdf.set_font("helvetica", size=10)
+            for label, value in summary_data.items():
+                pdf.set_font("helvetica", "B")
+                pdf.cell(50, 6, label)
+                pdf.set_font("helvetica", "")
+                pdf.cell(50, 6, value, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(5)
+
+            pdf.set_font("helvetica", "B", 12)
+            pdf.cell(0, 10, "Ingredients", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("helvetica", "B", 10)
+            pdf.set_fill_color(240, 240, 240)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(90, 8, "Name", border=1, fill=True, align='C')
+            pdf.cell(30, 8, "Qty (g)", border=1, fill=True, align='C')
+            pdf.cell(30, 8, "% in Conc.", border=1, fill=True, align='C')
+            pdf.cell(40, 8, "Cost", border=1, fill=True, align='C')
+            pdf.ln()
+
+            pdf.set_font("helvetica", size=9)
+            pdf.set_text_color(0, 0, 0)
+            for entry in sorted(formula.get('entries', []), key=lambda x: x['ingredient_name']):
+                if pdf.get_y() > 250:
+                    pdf.add_page()
+                    pdf.set_font("helvetica", "B", 10)
+                    pdf.cell(90, 8, "Name", border=1, fill=True, align='C')
+                    pdf.cell(30, 8, "Qty (g)", border=1, fill=True, align='C')
+                    pdf.cell(30, 8, "% in Conc.", border=1, fill=True, align='C')
+                    pdf.cell(40, 8, "Cost", border=1, fill=True, align='C')
+                    pdf.ln()
+                    pdf.set_font("helvetica", size=9)
+
+                # --- FIX: Robust row drawing logic ---
+                y_before = pdf.get_y()
+                # Draw the name cell, which might wrap
+                pdf.multi_cell(90, 6, entry.get('ingredient_name', ''), border='L', align='L')
+                y_after_multi_cell = pdf.get_y()
+
+                # Return to the original Y position for this row
+                pdf.set_y(y_before)
+                # Explicitly set X for the start of the second column
+                pdf.set_x(pdf.l_margin + 90)
+
+                # Calculate the height the name cell occupied
+                cell_height = y_after_multi_cell - y_before
+
+                # Draw the remaining cells, all with the same calculated height
+                pdf.cell(30, cell_height, f"{entry.get('quantity', 0.0):.4f}", border='L', align='R')
+                pdf.cell(30, cell_height, f"{entry.get('percentage', 0.0):.2f}%", border='L', align='R')
+                pdf.cell(40, cell_height, f"${entry.get('cost', 0.0):.2f}", border='LR', align='R')
+                pdf.ln(cell_height)  # Move down by the height of the row
+
+            pdf.cell(190, 0, "", border="T")
+
+            pdf.output(path)
+            return True, None
+        except Exception as e:
+            return False, str(e)

@@ -4,7 +4,7 @@
 from .dialogs import CustomDialog, CustomMessageBox, SaveAsDialog, TweakDialog
 from .trees import DraggableTree, DroppableTree, DragAndDropTree
 from .widgets import (
-    HoverIconLink, ClickableLabel, HoverLabel, AccordItemWidget, CustomTitleBar,
+    ClickableHeader, HoverIconLink, ClickableLabel, HoverLabel, AccordItemWidget, CustomTitleBar,
     AnimatedStackedWidget, AnimatedSplashScreen
 )
-from .helpers import create_fading_tree_widget, update_fades
+from .helpers import create_fading_tree_widget, update_fades, configure_accord_item_display

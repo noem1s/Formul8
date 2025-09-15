@@ -3,8 +3,12 @@
 
 import os
 import sys
-from PyQt6.QtWidgets import QTreeWidgetItem
 from PyQt6.QtCore import Qt
+
+from .constants import (
+    GRAMS_PER_ML, DROPS_PER_GRAM, GRAMS_PER_OUNCE_MASS, ML_PER_FL_OUNCE,
+    GRAMS_PER_KG, GRAMS_PER_POUND, ML_PER_LITER, FL_OUNCES_PER_DRAM
+)
 
 try:
     from fpdf import FPDF, XPos, YPos
@@ -14,6 +18,63 @@ except ImportError:
     YPos = None
 from datetime import datetime
 
+
+def convert_unit(value, from_unit, to_unit):
+    """
+    Converts a value from one unit to another using predefined constants.
+    The canonical unit is grams (g).
+    """
+    if from_unit == to_unit:
+        return value
+
+    # First, convert the input value to our base unit (grams)
+    value_in_grams = 0.0
+    if from_unit == 'g':
+        value_in_grams = value
+    elif from_unit == 'mg':
+        value_in_grams = value / 1000.0
+    elif from_unit == 'kg':
+        value_in_grams = value * GRAMS_PER_KG
+    elif from_unit == 'oz':
+        value_in_grams = value * GRAMS_PER_OUNCE_MASS
+    elif from_unit == 'lb':
+        value_in_grams = value * GRAMS_PER_POUND
+    elif from_unit == 'mL':
+        value_in_grams = value * GRAMS_PER_ML
+    elif from_unit == 'L':
+        value_in_grams = (value * ML_PER_LITER) * GRAMS_PER_ML
+    elif from_unit == 'fl oz':
+        value_in_grams = (value * ML_PER_FL_OUNCE) * GRAMS_PER_ML
+    elif from_unit == 'fl dr':
+        value_in_grams = (value * FL_OUNCES_PER_DRAM * ML_PER_FL_OUNCE) * GRAMS_PER_ML
+    elif from_unit == 'gtts':
+        value_in_grams = value / DROPS_PER_GRAM
+
+    # Now, convert from grams to the target unit
+    if to_unit == 'g':
+        return value_in_grams
+    elif to_unit == 'mg':
+        return value_in_grams * 1000.0
+    elif to_unit == 'kg':
+        return value_in_grams / GRAMS_PER_KG
+    elif to_unit == 'oz':
+        return value_in_grams / GRAMS_PER_OUNCE_MASS
+    elif to_unit == 'lb':
+        return value_in_grams / GRAMS_PER_POUND
+    elif to_unit == 'mL':
+        return value_in_grams / GRAMS_PER_ML
+    elif to_unit == 'L':
+        return (value_in_grams / GRAMS_PER_ML) / ML_PER_LITER
+    elif to_unit == 'fl oz':
+        return (value_in_grams / GRAMS_PER_ML) / ML_PER_FL_OUNCE
+    elif to_unit == 'fl dr':
+        return ((value_in_grams / GRAMS_PER_ML) / ML_PER_FL_OUNCE) / (1.0 / FL_OUNCES_PER_DRAM)
+    elif to_unit == 'gtts':
+        return value_in_grams * DROPS_PER_GRAM
+
+    return value  # Fallback for unknown units
+
+
 class ReportPDF(FPDF):
     def __init__(self, orientation='P', unit='mm', format='Letter'):
         if FPDF is None:
@@ -22,6 +83,24 @@ class ReportPDF(FPDF):
         self.report_title = "Formul8 Report"
 
     def header(self):
+        # --- TILED WATERMARK LOGIC ---
+        page_width = self.w
+        page_height = self.h
+        self.set_font('helvetica', 'B', 40)
+        self.set_text_color(230, 230, 230)
+
+        with self.local_context(fill_opacity=0.3):
+            # RATIONALE: Using fixed spacing units creates a more uniform and predictable
+            # grid pattern compared to fractional page dimensions.
+            x_step = 75
+            y_step = 60
+            # Loop over an expanded area to ensure the rotated text covers the corners
+            for y_pos in range(0, int(page_height) + y_step, y_step):
+                for x_pos in range(0, int(page_width) + x_step, x_step):
+                    with self.rotation(45, x=x_pos, y=y_pos):
+                        self.text(x=x_pos, y=y_pos, text="Formul8")
+
+        # --- ORIGINAL HEADER LOGIC ---
         self.set_font('helvetica', 'B', 16)
         self.set_text_color(152, 129, 167)
         self.cell(0, 10, self.report_title, border=False, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
@@ -40,66 +119,6 @@ class ReportPDF(FPDF):
 
     def set_report_title(self, title):
         self.report_title = title
-
-
-def populate_ingredient_tree(tree_widget, ingredients_to_show, data_manager):
-    """
-    A centralized utility to populate a QTreeWidget with ingredients and accord folders.
-    RATIONALE: Consolidates duplicated code from multiple views into a single, maintainable function.
-    """
-    from .components import AccordItemWidget
-    from .constants import ACCORD_SYMBOL
-
-    tree_widget.clear()
-
-    alignments = {}
-    for i in range(tree_widget.header().count()):
-        header_text = tree_widget.headerItem().text(i)
-        if header_text in ["Conc", "Note", "Cat 1", "Cat 2", "Unit"]:
-            alignments[i] = Qt.AlignmentFlag.AlignCenter
-        elif header_text in ["Cost / g", "Quantity", "% in Conc.", "Cost"]:
-            alignments[i] = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        else:
-            alignments[i] = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-
-    for ing_data in ingredients_to_show:
-        parent_item = QTreeWidgetItem()
-        parent_item.setData(0, Qt.ItemDataRole.UserRole, {'name': ing_data['name'], 'type': ing_data.get('type', 'raw')})
-        tree_widget.addTopLevelItem(parent_item)
-
-        is_accord = ing_data.get('type') == 'accord'
-        if is_accord:
-            item_widget = AccordItemWidget(ing_data['name'])
-            item_widget.set_tree_item(parent_item)
-            tree_widget.setItemWidget(parent_item, 0, item_widget)
-        else:
-            parent_item.setText(0, ing_data['name'])
-
-        if tree_widget.columnCount() > 1:
-            parent_item.setText(1, f"{ing_data.get('concentration', 100.0):.2f}%")
-        if tree_widget.columnCount() > 2:
-            parent_item.setText(2, format_for_display(ing_data.get('note_type', 'Other')))
-        if tree_widget.columnCount() > 3:
-            parent_item.setText(3, format_for_display(ing_data.get('primary_category', 'Uncategorized')))
-        if tree_widget.columnCount() > 4:
-            parent_item.setText(4, format_for_display(ing_data.get('secondary_category', '')))
-        if tree_widget.columnCount() > 5:
-            parent_item.setText(5, f"${ing_data.get('cost', 0.0):.2f}")
-
-        for col, align in alignments.items():
-            parent_item.setTextAlignment(col, align)
-
-        if is_accord:
-            accord_formula = data_manager.get_formulation_by_name(ing_data['name'])
-            if accord_formula:
-                data_manager.calculate_formulation_totals(accord_formula)
-                for entry in sorted(accord_formula.get('entries', []), key=lambda x: x['ingredient_name']):
-                    child_data = [f"    - {entry['ingredient_name']}", f"     {entry.get('percentage', 0):.2f}%"]
-                    child_item = QTreeWidgetItem(child_data)
-                    child_item.setFlags(child_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-                    child_item.setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                    child_item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
-                    parent_item.addChild(child_item)
 
 
 def resource_path(relative_path):

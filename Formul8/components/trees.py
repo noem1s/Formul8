@@ -5,8 +5,10 @@ from PyQt6.QtWidgets import QTreeWidget
 from PyQt6.QtGui import QDrag, QPixmap, QPainter, QFont, QFontMetrics, QPalette
 from PyQt6.QtCore import Qt, QMimeData, QPoint, pyqtSignal
 
+# --- Local Imports ---
+from .widgets import ClickableHeader
 
-# --- MODIFIED: Moved this helper function here from helpers.py to resolve a circular import ---
+
 def _create_drag_pixmap(item_names, palette):
     """
     Dynamically creates a pixmap to show while dragging items.
@@ -55,6 +57,15 @@ class DraggableTree(QTreeWidget):
         self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
         self.setIndentation(0)
+        self.setHeader(ClickableHeader(Qt.Orientation.Horizontal, self))
+
+        # --- FIX: Apply a stylesheet for perfect header text alignment ---
+        self.header().setStyleSheet("""
+            QHeaderView::section {
+                text-align: center;
+                padding: 0px 4px;
+            }
+        """)
 
     def startDrag(self, supportedActions):
         drag = QDrag(self)
@@ -86,6 +97,15 @@ class DroppableTree(QTreeWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QTreeWidget.DragDropMode.DropOnly)
         self.setIndentation(0)
+        self.setHeader(ClickableHeader(Qt.Orientation.Horizontal, self))
+
+        # --- FIX: Apply a stylesheet for perfect header text alignment ---
+        self.header().setStyleSheet("""
+            QHeaderView::section {
+                text-align: center;
+                padding: 0px 4px;
+            }
+        """)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
@@ -109,6 +129,7 @@ class DragAndDropTree(DroppableTree):
         self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.setDragDropMode(QTreeWidget.DragDropMode.DragDrop)
         self.setIndentation(0)
+        # NOTE: Inherits the custom header and its stylesheet from DroppableTree
 
     def startDrag(self, supportedActions):
         drag = QDrag(self)

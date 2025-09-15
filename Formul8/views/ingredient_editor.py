@@ -3,7 +3,8 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QPushButton, QLabel, QLineEdit, QComboBox, QTextEdit, QDoubleSpinBox, QInputDialog
+    QPushButton, QLabel, QLineEdit, QComboBox, QTextEdit, QDoubleSpinBox, QInputDialog,
+    QGroupBox, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
@@ -33,61 +34,87 @@ class EditIngredientFrame(QWidget):
         form_layout = QGridLayout()
         form_layout.setColumnStretch(1, 1)
 
+        self.type_label = QLabel("Ingredient Type:")
+
+        self.type_widget = QWidget()
+        type_layout = QHBoxLayout(self.type_widget)
+        type_layout.setContentsMargins(0, 0, 0, 0)
+        self.raw_radio = QRadioButton("Raw Material")
+        self.premade_accord_radio = QRadioButton("Pre-made Accord")
+        self.raw_radio.setChecked(True)
+
+        self.type_button_group = QButtonGroup(self)
+        self.type_button_group.addButton(self.raw_radio)
+        self.type_button_group.addButton(self.premade_accord_radio)
+
+        type_layout.addWidget(self.raw_radio)
+        type_layout.addWidget(self.premade_accord_radio)
+        type_layout.addStretch()
+
+        form_layout.addWidget(self.type_label, 0, 0)
+        form_layout.addWidget(self.type_widget, 0, 1)
+
+        self.type_button_group.buttonClicked.connect(self._on_type_changed)
+
         # --- Form Widgets ---
         self.ing_name_entry = QLineEdit()
         self.ing_conc_spinbox = QDoubleSpinBox(maximum=100.0, minimum=0.0, decimals=2, value=100.0)
         self.ing_conc_spinbox.valueChanged.connect(self._on_concentration_change)
+
+        # --- MODIFIED: Removed .setEditable(True) from these QComboBox widgets ---
         self.ing_diluent_combobox = QComboBox()
-        self.ing_diluent_combobox.setEditable(True)
+        self.ing_primary_category_combobox = QComboBox()
+        self.ing_secondary_category_combobox = QComboBox()
+
+        # --- UNCHANGED QComboBox widgets ---
         self.ing_brand_combobox = QComboBox()
-        self.ing_chem_entry = QLineEdit()
         self.ing_vendor_combobox = QComboBox()
-        self.ing_cost_spinbox = QDoubleSpinBox(maximum=10000.0, minimum=0.0, decimals=2)
         self.ing_note_type_combobox = QComboBox()
         self.ing_note_type_combobox.addItems(NOTE_TYPES)
-        self.ing_primary_category_combobox = QComboBox()
-        self.ing_primary_category_combobox.setEditable(True)
-        self.ing_secondary_category_combobox = QComboBox()
-        self.ing_secondary_category_combobox.setEditable(True)
+
+        self.ing_chem_entry = QLineEdit()
+        self.ing_cost_spinbox = QDoubleSpinBox(maximum=10000.0, minimum=0.0, decimals=2)
         self.ing_notes_text = QTextEdit()
 
-        # --- Form Layout Assembly ---
-        form_layout.addWidget(QLabel("Name:"), 0, 0)
-        form_layout.addWidget(self.ing_name_entry, 0, 1)
+        # --- Form Layout Assembly (row numbers start from 1) ---
+        form_layout.addWidget(QLabel("Name:"), 1, 0)
+        form_layout.addWidget(self.ing_name_entry, 1, 1)
 
-        form_layout.addWidget(QLabel("Concentration (%):"), 1, 0)
-        form_layout.addWidget(self.ing_conc_spinbox, 1, 1)
+        self.concentration_label = QLabel("Concentration (%):")
+        form_layout.addWidget(self.concentration_label, 2, 0)
+        form_layout.addWidget(self.ing_conc_spinbox, 2, 1)
 
         self.diluent_label_widget = self._create_addable_label(
             "Diluted In:", self.ing_diluent_combobox, "diluents", dialog_title="Solvent"
         )
-        form_layout.addWidget(self.diluent_label_widget, 2, 0)
-        form_layout.addWidget(self.ing_diluent_combobox, 2, 1)
+        form_layout.addWidget(self.diluent_label_widget, 3, 0)
+        form_layout.addWidget(self.ing_diluent_combobox, 3, 1)
 
         brand_label_widget = self._create_addable_label("Brand:", self.ing_brand_combobox, "brands")
-        form_layout.addWidget(brand_label_widget, 3, 0)
-        form_layout.addWidget(self.ing_brand_combobox, 3, 1)
+        form_layout.addWidget(brand_label_widget, 4, 0)
+        form_layout.addWidget(self.ing_brand_combobox, 4, 1)
 
-        form_layout.addWidget(QLabel("Chemical Name:"), 4, 0)
-        form_layout.addWidget(self.ing_chem_entry, 4, 1)
+        self.chemical_name_label = QLabel("Chemical Name:")
+        form_layout.addWidget(self.chemical_name_label, 5, 0)
+        form_layout.addWidget(self.ing_chem_entry, 5, 1)
 
         vendor_label_widget = self._create_addable_label("Vendor/Supplier:", self.ing_vendor_combobox, "suppliers")
-        form_layout.addWidget(vendor_label_widget, 5, 0)
-        form_layout.addWidget(self.ing_vendor_combobox, 5, 1)
+        form_layout.addWidget(vendor_label_widget, 6, 0)
+        form_layout.addWidget(self.ing_vendor_combobox, 6, 1)
 
-        form_layout.addWidget(QLabel("Cost per gram ($):"), 6, 0)
-        form_layout.addWidget(self.ing_cost_spinbox, 6, 1)
-        form_layout.addWidget(QLabel("Note Type:"), 7, 0)
-        form_layout.addWidget(self.ing_note_type_combobox, 7, 1)
+        form_layout.addWidget(QLabel("Cost per gram ($):"), 7, 0)
+        form_layout.addWidget(self.ing_cost_spinbox, 7, 1)
+        form_layout.addWidget(QLabel("Note Type:"), 8, 0)
+        form_layout.addWidget(self.ing_note_type_combobox, 8, 1)
 
-        form_layout.addWidget(QLabel("Primary Category:"), 8, 0)
-        form_layout.addWidget(self.ing_primary_category_combobox, 8, 1)
+        form_layout.addWidget(QLabel("Primary Category:"), 9, 0)
+        form_layout.addWidget(self.ing_primary_category_combobox, 9, 1)
 
-        form_layout.addWidget(QLabel("Secondary Category:"), 9, 0)
-        form_layout.addWidget(self.ing_secondary_category_combobox, 9, 1)
+        form_layout.addWidget(QLabel("Secondary Category:"), 10, 0)
+        form_layout.addWidget(self.ing_secondary_category_combobox, 10, 1)
 
-        form_layout.addWidget(QLabel("Notes:"), 10, 0, alignment=Qt.AlignmentFlag.AlignTop)
-        form_layout.addWidget(self.ing_notes_text, 10, 1)
+        form_layout.addWidget(QLabel("Notes:"), 11, 0, alignment=Qt.AlignmentFlag.AlignTop)
+        form_layout.addWidget(self.ing_notes_text, 11, 1)
 
         self.layout.addLayout(form_layout)
 
@@ -191,16 +218,37 @@ class EditIngredientFrame(QWidget):
 
     def _on_concentration_change(self, value):
         is_diluted = value < 100.0
-        self.diluent_label_widget.setVisible(is_diluted)
-        self.ing_diluent_combobox.setVisible(is_diluted)
+        # Only show the diluent fields if it's a raw material
+        show_diluent = is_diluted and self.raw_radio.isChecked()
+        self.diluent_label_widget.setVisible(show_diluent)
+        self.ing_diluent_combobox.setVisible(show_diluent)
+
+    def _on_type_changed(self, button):
+        # The button group signal sends the button that was clicked.
+        is_raw = (button is self.raw_radio)
+        self.concentration_label.setVisible(is_raw)
+        self.ing_conc_spinbox.setVisible(is_raw)
+        self.chemical_name_label.setVisible(is_raw)
+        self.ing_chem_entry.setVisible(is_raw)
+        # Trigger the concentration change logic to show/hide diluent fields
+        self._on_concentration_change(self.ing_conc_spinbox.value())
 
     def setup_ingredient_for_editing(self, ingredient_data):
         self.clear_fields()
         self.editing_ingredient_obj_ref = ingredient_data if ingredient_data else None
 
+        self.type_button_group.blockSignals(True)
+
         self._refresh_comboboxes()
 
-        if ingredient_data:
+        if ingredient_data and ingredient_data.get(
+                'name'):  # Check for name to ensure it's not an empty dict for "add new"
+            ingredient_type = ingredient_data.get('type', 'raw')
+            if ingredient_type == 'premade_accord':
+                self.premade_accord_radio.setChecked(True)
+            else:
+                self.raw_radio.setChecked(True)
+
             self.header_label.setText("Edit Ingredient")
             self.ing_name_entry.setText(ingredient_data.get('name', ''))
             self.ing_conc_spinbox.setValue(ingredient_data.get('concentration', 100.0))
@@ -218,11 +266,13 @@ class EditIngredientFrame(QWidget):
             self.save_close_button.setText("Update and Close")
         else:
             self.header_label.setText("Add New Ingredient")
+            self.raw_radio.setChecked(True)
             self.show_status_message("Creating new ingredient.")
             self.save_add_button.show()
             self.save_close_button.setText("Save and Close")
 
-        self._on_concentration_change(self.ing_conc_spinbox.value())
+        self.type_button_group.blockSignals(False)
+        self._on_type_changed(self.type_button_group.checkedButton())
 
     def clear_fields(self):
         for w in [self.ing_name_entry, self.ing_chem_entry, self.ing_notes_text]: w.clear()
@@ -246,12 +296,16 @@ class EditIngredientFrame(QWidget):
                 self.show_status_message(f"Error: An ingredient named '{name}' already exists.", is_error=True)
                 return None
 
+        is_premade_accord = self.premade_accord_radio.isChecked()
+
         ingredient_data = {
             "name": name,
-            "concentration": self.ing_conc_spinbox.value(),
-            "diluent": self.ing_diluent_combobox.currentText().strip() if self.ing_conc_spinbox.value() < 100 else "",
+            "type": 'premade_accord' if is_premade_accord else 'raw',
+            "concentration": 100.0 if is_premade_accord else self.ing_conc_spinbox.value(),
+            "diluent": "" if is_premade_accord else (
+                self.ing_diluent_combobox.currentText().strip() if self.ing_conc_spinbox.value() < 100 else ""),
             "brand": self.ing_brand_combobox.currentText().strip(),
-            "chemical_name": self.ing_chem_entry.text().strip(),
+            "chemical_name": "" if is_premade_accord else self.ing_chem_entry.text().strip(),
             "vendor": self.ing_vendor_combobox.currentText().strip(),
             "cost": self.ing_cost_spinbox.value(),
             "note_type": self.ing_note_type_combobox.currentText(),

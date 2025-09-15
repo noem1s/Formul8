@@ -13,7 +13,10 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QPoint
 from PyQt6.QtGui import QCursor
 
 # --- Local Imports from our 'formul8' package ---
-from ..components import CustomDialog, CustomMessageBox, DraggableTree, AccordItemWidget, TweakDialog
+from ..components import (
+    CustomDialog, CustomMessageBox, DraggableTree, AccordItemWidget,
+    configure_accord_item_display, create_fading_tree_widget
+)
 from ..constants import ACCORD_SYMBOL
 from ..utils import format_for_display
 from ..context_menu_handler import handle_tree_context_menu
@@ -81,7 +84,7 @@ class IngredientManagementFrame(QWidget):
         self.layout = QVBoxLayout(self)
         self.selected_item_name = None
         self.selected_item_type = None
-        self.sort_state = (None, None)  # (column_index, order)
+        self.sort_state = (None, None)
 
         top_bar = QHBoxLayout()
         back_button = QPushButton("<- Back to Main Menu")
@@ -96,6 +99,7 @@ class IngredientManagementFrame(QWidget):
         header = QLabel("Ingredient Library")
         header.setObjectName("HeaderLabel")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # --- FIX: Use addWidget for QWidgets, not addLayout ---
         self.layout.addWidget(header)
 
         search_layout = QHBoxLayout()
@@ -108,17 +112,17 @@ class IngredientManagementFrame(QWidget):
         search_layout.addWidget(clear_button)
         self.layout.addLayout(search_layout)
 
-        self.ingredient_tree = DraggableTree()
+        ing_container, self.ingredient_tree, self.top_fade, self.bottom_fade = create_fading_tree_widget(DraggableTree)
         self.ingredient_tree.setObjectName("IngredientManagerTree")
-        self.ingredient_tree.header().setSectionsClickable(True)
-        self.ingredient_tree.setSortingEnabled(True)
+        self.ingredient_tree.setSortingEnabled(False)
         self.columns = (
             "name", "conc", "diluent", "brand", "chem_name", "vendor", "cost", "note_type", "primary_cat",
             "secondary_cat")
         self.ingredient_tree.setColumnCount(len(self.columns))
-        header_labels = [c.replace("_", " ").title() for c in self.columns]
-        header_labels[self.columns.index('cost')] = 'Cost / g'
-        self.ingredient_tree.setHeaderLabels(header_labels)
+        self.original_header_labels = [c.replace("_", " ").title() for c in self.columns]
+        self.original_header_labels[self.columns.index('cost')] = 'Cost / g'
+        self.ingredient_tree.setHeaderLabels(self.original_header_labels)
+
         self.ingredient_tree.header().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self.ingredient_tree.itemDoubleClicked.connect(self.edit_selected_item_gui)
         self.ingredient_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -127,10 +131,16 @@ class IngredientManagementFrame(QWidget):
         self.ingredient_tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.ingredient_tree.itemExpanded.connect(self._update_accord_indicator)
         self.ingredient_tree.itemCollapsed.connect(self._update_accord_indicator)
-        self.ingredient_tree.header().sectionClicked.connect(
+        self.ingredient_tree.header().customSectionClicked.connect(
             lambda index: self._handle_sort_request(self.ingredient_tree, index)
         )
-        self.layout.addWidget(self.ingredient_tree)
+        self.layout.addWidget(ing_container)
+
+        header_widget = self.ingredient_tree.header()
+        header_widget.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header_widget.setStretchLastSection(False)
+        header_widget.sectionResized.connect(self.save_column_widths)
+        header_widget.sectionMoved.connect(self.save_column_widths)
 
         bottom_layout = QHBoxLayout()
         add_button = QPushButton("Add New Ingredient")
@@ -151,10 +161,20 @@ class IngredientManagementFrame(QWidget):
     def on_show(self):
         self.view_ingredients_gui()
         self.load_column_widths()
+        QTimer.singleShot(0, self._initial_fade_update)
+        QTimer.singleShot(0, self._adjust_fade_positions)
 
-        header = self.ingredient_tree.header()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
+    def _initial_fade_update(self):
+        """Force an update of the fades after the UI is shown."""
+        from ..components import update_fades
+        update_fades(self.ingredient_tree, self.top_fade, self.bottom_fade)
+
+    def _adjust_fade_positions(self):
+        """Sets a top margin on the fade overlays to position them below the headers."""
+        header_height = self.ingredient_tree.header().height()
+        overlay_widget = self.top_fade.parentWidget()
+        if overlay_widget:
+            overlay_widget.layout().setContentsMargins(0, header_height, 0, 0)
 
     def _update_accord_indicator(self, item):
         """Changes the expand/collapse icon for an accord item."""
@@ -170,6 +190,23 @@ class IngredientManagementFrame(QWidget):
                 widget = self.ingredient_tree.itemWidget(item, 0)
                 if isinstance(widget, AccordItemWidget):
                     widget.set_selected(item.isSelected())
+
+    def _update_header_labels(self):
+        """
+        Updates header labels to show a unicode sort indicator instead of using
+        Qt's buggy native indicator, which causes alignment issues.
+        """
+        sort_column, sort_order = self.sort_state
+        new_labels = self.original_header_labels[:]
+
+        if sort_column is not None:
+            label_text = new_labels[sort_column]
+            if sort_order == Qt.SortOrder.AscendingOrder:
+                new_labels[sort_column] = f" {label_text} ▲"
+            else:
+                new_labels[sort_column] = f" {label_text} ▼"
+
+        self.ingredient_tree.setHeaderLabels(new_labels)
 
     def _handle_sort_request(self, tree_widget, column_index):
         """
@@ -191,15 +228,6 @@ class IngredientManagementFrame(QWidget):
         self.sort_state = (new_sort_column, new_sort_order)
         self.view_ingredients_gui()
 
-        if new_sort_column is not None:
-            tree_widget.header().setSortIndicator(new_sort_column, new_sort_order)
-            tree_widget.header().setSortIndicatorShown(True)
-        else:
-            header = self.ingredient_tree.header()
-            header.setSortIndicatorShown(False)
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-            header.setStretchLastSection(True)
-
     def show_status_message(self, text, is_error=False):
         self.status_label.setText(text)
         self.status_label.setProperty("error", is_error)
@@ -219,8 +247,18 @@ class IngredientManagementFrame(QWidget):
 
     def view_ingredients_gui(self):
         """
-        Populates the tree with ingredients and accords, showing accords as expandable folders.
+        Populates the tree with ingredients and accords using the centralized helper.
         """
+        self._update_header_labels()
+
+        expanded_item_names = set()
+        for i in range(self.ingredient_tree.topLevelItemCount()):
+            item = self.ingredient_tree.topLevelItem(i)
+            if item and item.isExpanded():
+                item_data = item.data(0, Qt.ItemDataRole.UserRole)
+                if item_data and 'name' in item_data:
+                    expanded_item_names.add(item_data['name'])
+
         self.ingredient_tree.clear()
         search_term = self.search_entry.text().lower()
 
@@ -231,9 +269,9 @@ class IngredientManagementFrame(QWidget):
             materials_to_show = [
                 item for item in all_ingredients if
                 search_term in item.get('name', '').lower() or
-                (item.get('type') == 'accord' and any(
+                (item.get('type') in ['formulation_accord', 'premade_accord'] and any(
                     search_term in entry.get('ingredient_name', '').lower() for entry in
-                    self.data_manager.get_formulation_by_name(item.get('name', '')).get('entries', [])))
+                    (self.data_manager.get_formulation_by_name(item.get('name', '')) or {}).get('entries', [])))
             ]
 
         sort_column, sort_order = self.sort_state
@@ -245,10 +283,13 @@ class IngredientManagementFrame(QWidget):
             }
             sort_key = sort_key_map.get(sort_column, 'name')
 
-            if sort_key in ['concentration', 'cost']:
-                materials_to_show.sort(key=lambda x: float(x.get(sort_key, 0)), reverse=is_reverse)
-            else:
-                materials_to_show.sort(key=lambda x: str(x.get(sort_key, '')).lower(), reverse=is_reverse)
+            def sort_func(x):
+                val = x.get(sort_key)
+                if sort_key in ["concentration", "cost"]:
+                    return float(str(val or '0').strip('%$ '))
+                return str(val or '').lower()
+
+            materials_to_show.sort(key=sort_func, reverse=is_reverse)
 
         alignments = {
             1: Qt.AlignmentFlag.AlignCenter, 2: Qt.AlignmentFlag.AlignCenter,
@@ -257,20 +298,14 @@ class IngredientManagementFrame(QWidget):
             7: Qt.AlignmentFlag.AlignCenter, 8: Qt.AlignmentFlag.AlignCenter, 9: Qt.AlignmentFlag.AlignCenter,
         }
 
+        self.ingredient_tree.itemSelectionChanged.disconnect()
         for item_data in materials_to_show:
             parent_item = QTreeWidgetItem()
             parent_item.setData(0, Qt.ItemDataRole.UserRole,
                                 {'name': item_data['name'], 'type': item_data.get('type', 'raw')})
-            self.ingredient_tree.addTopLevelItem(parent_item)
 
-            is_accord = item_data.get('type') == 'accord'
-            if is_accord:
-                item_widget = AccordItemWidget(item_data['name'])
-                item_widget.set_tree_item(parent_item)
-                self.ingredient_tree.setItemWidget(parent_item, 0, item_widget)
-            else:
+            if item_data.get('type', 'raw') not in ['formulation_accord', 'premade_accord']:
                 parent_item.setText(0, item_data['name'])
-                parent_item.setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
             parent_item.setText(1, f"{item_data.get('concentration', 100.0):.2f}%")
             parent_item.setText(2, format_for_display(item_data.get('diluent', '')))
@@ -282,23 +317,32 @@ class IngredientManagementFrame(QWidget):
             parent_item.setText(8, format_for_display(item_data.get('primary_category', 'Uncategorized')))
             parent_item.setText(9, format_for_display(item_data.get('secondary_category', '')))
 
-            for i, align in alignments.items():
-                parent_item.setTextAlignment(i, align)
+            self.ingredient_tree.addTopLevelItem(parent_item)
 
-            if is_accord:
-                accord_formula = self.data_manager.get_formulation_by_name(item_data['name'])
-                if accord_formula:
-                    self.data_manager.calculate_formulation_totals(accord_formula)
-                    for entry in sorted(accord_formula.get('entries', []), key=lambda x: x['ingredient_name']):
-                        child_data = [f"    - {entry['ingredient_name']}", f"     {entry.get('percentage', 0):.2f}%"]
-                        child_item = QTreeWidgetItem(child_data)
-                        child_item.setFlags(child_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-                        child_item.setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                        child_item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
-                        parent_item.addChild(child_item)
+            if item_data['name'] in expanded_item_names:
+                parent_item.setExpanded(True)
+
+            configure_accord_item_display(
+                parent_item=parent_item,
+                item_data=item_data,
+                data_manager=self.data_manager,
+                tree_widget=self.ingredient_tree,
+                child_percentage_column=1,
+                child_name_prefix="    - "
+            )
+
+            for i, align in alignments.items():
+                if i < parent_item.columnCount():
+                    parent_item.setTextAlignment(i, align)
+
+        self.ingredient_tree.itemSelectionChanged.connect(self.on_treeview_selection_change)
+        self.ingredient_tree.itemSelectionChanged.connect(self._on_selection_changed)
 
         self.on_treeview_selection_change()
         self._on_selection_changed()
+
+        from ..components import update_fades
+        QTimer.singleShot(0, lambda: update_fades(self.ingredient_tree, self.top_fade, self.bottom_fade))
 
     def on_treeview_selection_change(self):
         selected_items = self.ingredient_tree.selectedItems()
@@ -331,17 +375,16 @@ class IngredientManagementFrame(QWidget):
             self.show_status_message(f"Notes for '{ingredient['name']}' updated.")
 
     def add_new_ingredient_gui(self):
-        # --- MODIFIED: Emit an empty dict instead of None to match signal signature ---
         self.edit_ingredient_signal.emit({})
 
     def edit_selected_item_gui(self):
         if not self.selected_item_name: return
 
-        if self.selected_item_type == 'accord':
+        if self.selected_item_type == 'formulation_accord':
             accord_data = self.data_manager.get_formulation_by_name(self.selected_item_name)
             if accord_data:
                 self.edit_accord_signal.emit(accord_data)
-        else:
+        else:  # Handles 'raw' and 'premade_accord'
             ingredient_data = self.data_manager.get_ingredient_by_name(self.selected_item_name)
             if ingredient_data:
                 self.edit_ingredient_signal.emit(ingredient_data)
@@ -349,13 +392,14 @@ class IngredientManagementFrame(QWidget):
     def delete_item_gui(self):
         if not self.selected_item_name: return
 
-        item_type_str = "accord" if self.selected_item_type == 'accord' else "ingredient"
+        item_type_str = "accord" if self.selected_item_type in ['formulation_accord',
+                                                                'premade_accord'] else "ingredient"
         reply = CustomMessageBox.question(self, f"Confirm Delete",
                                           f"Are you sure you want to delete the {item_type_str} '{self.selected_item_name}'?")
         if reply == QDialogButtonBox.StandardButton.Yes:
             name_to_delete = self.selected_item_name
-            if self.selected_item_type == 'accord':
-                self.data_manager.delete_formulation(name_to_delete)
+            if self.selected_item_type == 'formulation_accord':
+                self.data_manager.delete_formulation(name_to_delete)  # This also deletes the ingredient part
             else:
                 self.data_manager.delete_ingredient(name_to_delete)
 
@@ -385,7 +429,7 @@ class IngredientManagementFrame(QWidget):
 
         success, error_msg = self.data_manager.export_ingredients_to_txt(path)
         if success:
-            QMessageBox.information(self, "Export Successful", f"Ingredient library exported to\n{path}")
+            QMessageBox.information(self, "Export Successful", f"Ingredient library exported to:\n{path}")
         else:
             QMessageBox.critical(self, "Export Error", f"Could not export library:\n{error_msg}")
 
@@ -397,6 +441,6 @@ class IngredientManagementFrame(QWidget):
 
         success, error_msg = self.data_manager.export_ingredients_to_pdf(path)
         if success:
-            QMessageBox.information(self, "Export Successful", f"Ingredient library exported to\n{path}")
+            QMessageBox.information(self, "Export Successful", f"Ingredient library exported to:\n{path}")
         else:
             QMessageBox.critical(self, "Export Error", f"Could not export library:\n{error_msg}")
